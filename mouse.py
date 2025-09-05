@@ -229,13 +229,18 @@ class Mouse:
     def move(self, x: float, y: float):
         if not is_connected:
             return
-        print(f"Ancien x : {x}")
-        print(f"Ancien y : {y}")
+        # Use proper logging instead of print statements
+        import logging
+        logger = logging.getLogger("COLORBOT")
+        
+        logger.debug(f"Mouse move input: x={x}, y={y}")
         dx, dy = round(x), round(y)
-        print(f"Après round x : {dx}")
-        print(f"Après round y : {dy}")
+        logger.debug(f"Mouse move rounded: dx={dx}, dy={dy}")
+        
         with makcu_lock:
-            makcu.write(f"km.move({dx},{dy})\r".encode())
+            cmd = f"km.move({dx},{dy})\r"
+            logger.debug(f"Sending command: {cmd}")
+            makcu.write(cmd.encode())
             makcu.flush()
 
     def move_bezier(self, x: float, y: float, segments: int, ctrl_x: float, ctrl_y: float):

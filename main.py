@@ -117,12 +117,12 @@ class AimTracker:
         self.in_game_sens = float(getattr(config, "in_game_sens", 7))
         
         # Main aimbot button parameters
-        self.main_x_speed = float(getattr(config, "main_x_speed", 0.5))
-        self.main_y_speed = float(getattr(config, "main_y_speed", 0.5))
+        self.main_x_speed = float(getattr(config, "main_x_speed", 3.0))
+        self.main_y_speed = float(getattr(config, "main_y_speed", 3.0))
         
         # Secondary aimbot button parameters
-        self.sec_x_speed = float(getattr(config, "sec_x_speed", 0.5))
-        self.sec_y_speed = float(getattr(config, "sec_y_speed", 0.5))
+        self.sec_x_speed = float(getattr(config, "sec_x_speed", 1.5))
+        self.sec_y_speed = float(getattr(config, "sec_y_speed", 1.5))
         
         # For backward compatibility
         self.normal_x_speed = self.main_x_speed
@@ -142,12 +142,13 @@ class AimTracker:
         # Other settings
         self.color = getattr(config, "color", "yellow")
         self.mode = getattr(config, "mode", "Normal")
-        self.selected_mouse_button = getattr(config, "selected_mouse_button", 3)
-        self.selected_sec_mouse_button = getattr(config, "selected_sec_mouse_button", 4)
-        self.selected_tb_btn = getattr(config, "selected_tb_btn", 3)
+        self.selected_mouse_button = getattr(config, "selected_mouse_button", 1)  # Default to left mouse button
+        self.selected_sec_mouse_button = getattr(config, "selected_sec_mouse_button", 2)  # Default to right mouse button
+        self.selected_tb_btn = getattr(config, "selected_tb_btn", 3)  # Default to middle mouse button
         self.max_speed = float(getattr(config, "max_speed", 1000.0))
         
         logger.info(f"AimTracker initialized with main speeds: {self.main_x_speed}/{self.main_y_speed}, sec speeds: {self.sec_x_speed}/{self.sec_y_speed}")
+        logger.info(f"Mouse buttons: main={self.selected_mouse_button}, secondary={self.selected_sec_mouse_button}, tb={self.selected_tb_btn}")
 
         self.controller = Mouse()
         self.move_queue = queue.Queue(maxsize=50)
@@ -173,16 +174,28 @@ class AimTracker:
             try:
                 dx, dy, delay = self.move_queue.get(timeout=0.1)
                 try:
+                    # Log the movement for debugging
+                    logger.debug(f"Processing move: dx={dx}, dy={dy}")
+                    
+                    # Ensure controller is initialized
+                    if not hasattr(self, "controller") or self.controller is None:
+                        logger.error("Mouse controller is not initialized!")
+                        self.controller = Mouse()
+                        
+                    # Call move method
                     self.controller.move(dx, dy)
+                    logger.debug("Move command sent to mouse controller")
                 except Exception as e:
-                    print("[Mouse.move error]", e)
+                    logger.error(f"[Mouse.move error] {e}", exc_info=True)
+                
+                # Wait if delay is specified
                 if delay and delay > 0:
                     time.sleep(delay)
             except queue.Empty:
                 time.sleep(0.001)
                 continue
             except Exception as e:
-                print(f"[Move Queue Error] {e}")
+                logger.error(f"[Move Queue Error] {e}", exc_info=True)
                 time.sleep(0.01)
 
     def _clip_movement(self, dx, dy):
@@ -398,12 +411,42 @@ class AimTracker:
         mode = getattr(config, "mode", "Normal")
         if mode == "Normal":
             try:
-                main_btn = getattr(config, "selected_mouse_button", None)
-                sec_btn = getattr(config, "selected_sec_mouse_button", None)
+                # Get button configurations from config
+                main_btn = getattr(config, "selected_mouse_button", 1)  # Default to left mouse button
+                sec_btn = getattr(config, "selected_sec_mouse_button", 2)  # Default to right mouse button
+                
+                # Ensure buttons are integers
+                try:
+                    main_btn = int(main_btn)
+                    sec_btn = int(sec_btn)
+                except (ValueError, TypeError):
+                    logger.error(f"Invalid button values: main_btn={main_btn}, sec_btn={sec_btn}")
+                    main_btn = 1
+                    sec_btn = 2
+                
+                # 按鍵映射轉換（從UI按鍵編號轉換為button_states索引）
+                button_index_map = {
+                    1: 0,  # 左鍵對應索引0
+                    2: 1,  # 右鍵對應索引1 (實際是中鍵)
+                    3: 2,  # 中鍵對應索引2 (實際是上側鍵)
+                    4: 4,  # 上側鍵對應索引4 (實際是右鍵)
+                    5: 3   # 下側鍵對應索引3
+                }
+                
+                # 轉換按鍵編號為索引
+                main_btn_idx = button_index_map.get(main_btn, 0)  # 默認使用左鍵索引
+                sec_btn_idx = button_index_map.get(sec_btn, 1)    # 默認使用中鍵索引
                 
                 # Check which button is pressed and use appropriate speeds
-                main_button_pressed = main_btn is not None and is_button_pressed(main_btn)
-                sec_button_pressed = sec_btn is not None and is_button_pressed(sec_btn)
+                main_button_pressed = is_button_pressed(main_btn_idx)
+                sec_button_pressed = is_button_pressed(sec_btn_idx)
+                
+                # 記錄實際使用的按鍵索引，方便調試
+                logger.debug(f"Button indices: main_btn_idx={main_btn_idx}, sec_btn_idx={sec_btn_idx}")
+                
+                # Log button states for debugging
+                logger.debug(f"Button config: main_btn={main_btn}, sec_btn={sec_btn}")
+                logger.debug(f"Button states: main_pressed={main_button_pressed}, sec_pressed={sec_button_pressed}")
                 
                 if aim_enabled and (main_button_pressed or sec_button_pressed):
                     # Get the appropriate speeds based on which button is pressed
@@ -411,10 +454,15 @@ class AimTracker:
                         x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
                         y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
                         logger.debug(f"Using main button speeds: {x_speed}/{y_speed}")
-                    else:
+                    elif sec_button_pressed:  # Explicitly check for secondary button
                         x_speed = float(getattr(config, "sec_x_speed", self.sec_x_speed))
                         y_speed = float(getattr(config, "sec_y_speed", self.sec_y_speed))
                         logger.debug(f"Using secondary button speeds: {x_speed}/{y_speed}")
+                    else:
+                        # Fallback (shouldn't happen but just in case)
+                        x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
+                        y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
+                        logger.debug(f"Fallback to main button speeds: {x_speed}/{y_speed}")
                     
                     # Apply smoothing if within smoothing FOV
                     if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
@@ -424,14 +472,41 @@ class AimTracker:
                         ndx *= x_speed
                         ndy *= y_speed
                     
+                    # Debug movement values
+                    logger.debug(f"Movement values: dx={ndx}, dy={ndy}")
+                    
                     ddx, ddy = self._clip_movement(ndx, ndy)
+                    logger.debug(f"Clipped movement: ddx={ddx}, ddy={ddy}")
+                    
+                    # Actually move the mouse
                     self.move_queue.put((ddx, ddy, 0.005))
             except Exception as e:
                 logger.error(f"Error in aim movement: {e}", exc_info=True)
 
             # Triggerbot
             try:
-                if getattr(config, "enabletb", False) and is_button_pressed(getattr(config, "selected_tb_btn", None)) or is_button_pressed(getattr(config, "selected_2_tb", None)):
+                # 獲取Triggerbot按鍵設置
+                tb_btn = getattr(config, "selected_tb_btn", 3)  # Default to middle mouse button
+                tb_btn_2 = getattr(config, "selected_2_tb", None)
+                
+                # 按鍵映射轉換（從UI按鍵編號轉換為button_states索引）
+                button_index_map = {
+                    1: 0,  # 左鍵對應索引0
+                    2: 1,  # 右鍵對應索引1 (實際是中鍵)
+                    3: 2,  # 中鍵對應索引2 (實際是上側鍵)
+                    4: 4,  # 上側鍵對應索引4 (實際是右鍵)
+                    5: 3   # 下側鍵對應索引3
+                }
+                
+                # 轉換按鍵編號為索引
+                tb_btn_idx = button_index_map.get(tb_btn, 2)  # 默認使用上側鍵索引
+                tb_btn_2_idx = button_index_map.get(tb_btn_2, None)
+                
+                # 檢查按鍵狀態
+                tb_pressed = is_button_pressed(tb_btn_idx)
+                tb_2_pressed = tb_btn_2_idx is not None and is_button_pressed(tb_btn_2_idx)
+                
+                if getattr(config, "enabletb", False) and (tb_pressed or tb_2_pressed):
                     cx0, cy0 = int(frame.xres // 2), int(frame.yres // 2)
                     r = int(getattr(config, "tbfovsize", self.tbfovsize))
                     x1, y1 = max(cx0 - r, 0), max(cy0 - r, 0)
@@ -836,6 +911,13 @@ class ViewerApp(ctk.CTk):
                      command=self._test_move, width=100).pack(side="left", padx=5, pady=5, expand=True, fill="x")
         ctk.CTkButton(test_frame, text=self.lang_manager.get_text('general', 'click_test', "Click Test"), 
                      command=self._test_click, width=100).pack(side="right", padx=5, pady=5, expand=True, fill="x")
+                     
+        # Input Monitor
+        self.var_input_monitor = tk.BooleanVar(value=False)
+        input_monitor_frame = ctk.CTkFrame(self.tab_general)
+        input_monitor_frame.pack(pady=5, fill="x")
+        ctk.CTkCheckBox(input_monitor_frame, text=self.lang_manager.get_text('general', 'input_monitor', "Input Monitor"), 
+                       variable=self.var_input_monitor, command=self._toggle_input_monitor).pack(pady=5, anchor="w")
 
         ctk.CTkLabel(self.tab_general, text=self.lang_manager.get_text('general', 'appearance', "Appearance")).pack(pady=5)
         ctk.CTkOptionMenu(self.tab_general, values=["Dark", "Light"], command=self._on_appearance_selected).pack(pady=5, fill="x")
@@ -1346,6 +1428,38 @@ class ViewerApp(ctk.CTk):
                     elif "TB FOV Circle Color" in widget.cget("text"):
                         widget.configure(text="TB FOV Circle Color")
             
+            # Update Input Monitor
+            for widget in self.tab_general.winfo_children():
+                if isinstance(widget, ctk.CTkFrame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ctk.CTkCheckBox) and "Input Monitor" in child.cget("text"):
+                            child.configure(text=self.lang_manager.get_text('general', 'input_monitor', "Input Monitor"))
+            
+            # Update mouse button status labels
+            if hasattr(self, 'mouse_status_labels'):
+                for btn_key, label in self.mouse_status_labels.items():
+                    current_text = label.cget("text")
+                    if "Pressed" in current_text:
+                        label.configure(text=self.lang_manager.get_text('general', 'pressed', "Pressed"))
+                    else:
+                        label.configure(text=self.lang_manager.get_text('general', 'not_pressed', "Not Pressed"))
+                        
+                # Update button names in the status frame
+                for frame in self.mouse_status_frame.winfo_children():
+                    if isinstance(frame, ctk.CTkFrame):
+                        for child in frame.winfo_children():
+                            if isinstance(child, ctk.CTkLabel) and child not in self.mouse_status_labels.values():
+                                for btn_key, btn_name in [
+                                    ("left_mouse", "Left Mouse Button"),
+                                    ("right_mouse", "Right Mouse Button"),
+                                    ("middle_mouse", "Middle Mouse Button"),
+                                    ("side_mouse_4", "Side Mouse 4 Button"),
+                                    ("side_mouse_5", "Side Mouse 5 Button")
+                                ]:
+                                    if btn_name in child.cget("text"):
+                                        child.configure(text=self.lang_manager.get_text('buttons', btn_key, btn_name))
+                                        break
+            
             # Update Config tab
             for widget in self.tab_config.winfo_children():
                 if isinstance(widget, ctk.CTkLabel):
@@ -1365,7 +1479,7 @@ class ViewerApp(ctk.CTk):
         
     def _test_move(self):
         try:
-            self.tracker.controller.move(100, 100)
+            self.tracker.controller.move(500, 500)
             time.sleep(0.1)
             self.tracker.controller.move(-100, -100)
             self._log_config("Move test executed")
@@ -1378,6 +1492,149 @@ class ViewerApp(ctk.CTk):
             self._log_config("Click test executed")
         except Exception as e:
             self._log_config(f"Click test error: {e}")
+    
+    def _toggle_input_monitor(self):
+        if self.var_input_monitor.get():
+            # Create a new window for input monitoring
+            self._create_input_monitor_window()
+            
+            # Start the monitoring thread if not already running
+            if not hasattr(self, '_input_monitor_thread') or not self._input_monitor_thread.is_alive():
+                self._input_monitor_stop_event = threading.Event()
+                self._input_monitor_thread = threading.Thread(target=self._monitor_input_loop, daemon=True)
+                self._input_monitor_thread.start()
+        else:
+            # Close the monitor window if it exists
+            if hasattr(self, 'input_monitor_window') and self.input_monitor_window is not None:
+                try:
+                    self.input_monitor_window.destroy()
+                    self.input_monitor_window = None
+                except Exception as e:
+                    logger.error(f"Error closing input monitor window: {e}")
+            
+            # Stop the monitoring thread if running
+            if hasattr(self, '_input_monitor_stop_event'):
+                self._input_monitor_stop_event.set()
+    
+    def _create_input_monitor_window(self):
+        """Create a new window for input monitoring."""
+        if hasattr(self, 'input_monitor_window') and self.input_monitor_window is not None:
+            try:
+                self.input_monitor_window.lift()  # Bring to front if already exists
+                return
+            except Exception:
+                pass  # Window might have been closed externally
+        
+        # Create a new toplevel window
+        self.input_monitor_window = ctk.CTkToplevel(self)
+        self.input_monitor_window.title(self.lang_manager.get_text('general', 'input_monitor', "Input Monitor"))
+        self.input_monitor_window.geometry("300x250")
+        self.input_monitor_window.resizable(False, False)
+        
+        # Set window to stay on top
+        self.input_monitor_window.attributes("-topmost", True)
+        
+        # Handle window close event
+        self.input_monitor_window.protocol("WM_DELETE_WINDOW", self._on_monitor_window_close)
+        
+        # Create a frame for the button status
+        status_frame = ctk.CTkFrame(self.input_monitor_window)
+        status_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Title label
+        ctk.CTkLabel(
+            status_frame, 
+            text=self.lang_manager.get_text('general', 'input_monitor', "Input Monitor"),
+            font=("Arial", 16, "bold")
+        ).pack(pady=(10, 20))
+        
+        # Create labels for each mouse button
+        self.mouse_status_labels = {}
+        for btn_key, btn_name in [
+            ("left_mouse", "Left Mouse Button"),
+            ("right_mouse", "Right Mouse Button"),
+            ("middle_mouse", "Middle Mouse Button"),
+            ("side_mouse_4", "Side Mouse 4 Button"),
+            ("side_mouse_5", "Side Mouse 5 Button")
+        ]:
+            btn_frame = ctk.CTkFrame(status_frame)
+            btn_frame.pack(pady=5, fill="x")
+            
+            translated_name = self.lang_manager.get_text('buttons', btn_key, btn_name)
+            ctk.CTkLabel(btn_frame, text=translated_name, width=150).pack(side="left", padx=10)
+            
+            status_label = ctk.CTkLabel(
+                btn_frame, 
+                text=self.lang_manager.get_text('general', 'not_pressed', "Not Pressed"),
+                width=100,
+                text_color="red"
+            )
+            status_label.pack(side="right", padx=10)
+            self.mouse_status_labels[btn_key] = status_label
+    
+    def _on_monitor_window_close(self):
+        """Handle monitor window close event."""
+        self.var_input_monitor.set(False)  # Uncheck the checkbox
+        if hasattr(self, 'input_monitor_window') and self.input_monitor_window is not None:
+            self.input_monitor_window.destroy()
+            self.input_monitor_window = None
+                
+    def _monitor_input_loop(self):
+        """Monitor mouse button states in a loop."""
+        # Button mapping between key names and mouse button indices in button_states
+        # 根據最新測試結果修正按鍵映射
+        button_mapping = {
+            "left_mouse": 0,    # 左鍵對應索引0
+            "right_mouse": 1,   # 右鍵對應索引1 (實際是中鍵)
+            "middle_mouse": 2,  # 中鍵對應索引2 (實際是上側鍵)
+            "side_mouse_4": 4,  # 上側鍵對應索引4 (實際是右鍵)
+            "side_mouse_5": 3   # 下側鍵對應索引3
+        }
+        
+        # 記錄按鍵狀態，避免重複更新UI
+        button_states_cache = {key: False for key in button_mapping.keys()}
+        
+        while not self._input_monitor_stop_event.is_set():
+            # Check if window still exists
+            if not hasattr(self, 'input_monitor_window') or self.input_monitor_window is None:
+                break
+                
+            for btn_key, btn_idx in button_mapping.items():
+                try:
+                    # Check if the button is pressed
+                    is_pressed = is_button_pressed(btn_idx)
+                    
+                    # 只有當狀態變化時才更新UI
+                    if is_pressed != button_states_cache[btn_key]:
+                        button_states_cache[btn_key] = is_pressed
+                        # Update the UI in the main thread
+                        if is_pressed:
+                            self.after(0, lambda k=btn_key: self._update_button_status(k, True))
+                        else:
+                            self.after(0, lambda k=btn_key: self._update_button_status(k, False))
+                except Exception as e:
+                    logger.error(f"Error monitoring button {btn_key}: {e}")
+            
+            # Sleep a short time to avoid high CPU usage
+            time.sleep(0.05)
+    
+    def _update_button_status(self, button_key, is_pressed):
+        """Update the status label for a specific button."""
+        if hasattr(self, 'mouse_status_labels') and button_key in self.mouse_status_labels:
+            try:
+                label = self.mouse_status_labels[button_key]
+                if is_pressed:
+                    label.configure(
+                        text=self.lang_manager.get_text('general', 'pressed', "Pressed"),
+                        text_color="green"
+                    )
+                else:
+                    label.configure(
+                        text=self.lang_manager.get_text('general', 'not_pressed', "Not Pressed"),
+                        text_color="red"
+                    )
+            except Exception as e:
+                logger.error(f"Error updating button status: {e}")
 
     def _on_enableaim_changed(self):
         config.enableaim = self.var_enableaim.get()
@@ -1523,6 +1780,23 @@ class ViewerApp(ctk.CTk):
             self.selected_source = None
 
     def _on_close(self):
+        # Close input monitor window if it exists
+        if hasattr(self, 'input_monitor_window') and self.input_monitor_window is not None:
+            try:
+                self.input_monitor_window.destroy()
+                self.input_monitor_window = None
+            except Exception as e:
+                logger.error(f"Error closing input monitor window: {e}")
+                
+        # Stop input monitor thread if running
+        if hasattr(self, '_input_monitor_stop_event'):
+            self._input_monitor_stop_event.set()
+            if hasattr(self, '_input_monitor_thread'):
+                try:
+                    self._input_monitor_thread.join(timeout=1.0)
+                except Exception:
+                    pass
+        
         try:
             self.tracker.stop()
         except Exception:
