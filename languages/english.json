@@ -1,0 +1,60 @@
+{
+    "language_name": "English",
+    "general": {
+        "general": "General",
+        "aimbot": "Aimbot",
+        "triggerbot": "Triggerbot",
+        "config": "Config",
+        "status": "Status",
+        "connected": "Connected",
+        "disconnected": "Disconnected",
+        "refresh_sources": "Refresh NDI Sources",
+        "connect_source": "Connect to Source",
+        "appearance": "Appearance",
+        "mode": "Mode",
+        "color": "Color",
+        "language": "Language",
+        "makcu_status": "MAKCU Status",
+        "move_test": "Move Test",
+        "click_test": "Click Test"
+    },
+    "aimbot": {
+        "x_speed": "X Speed",
+        "y_speed": "Y Speed",
+        "in_game_sens": "In-game sens",
+        "smoothing": "Smoothing",
+        "smoothing_fov": "Smoothing FOV",
+        "fov_size": "FOV Size",
+        "enable_aim": "Enable Aim",
+        "aimbot_button": "Main Aimbot Button",
+        "sec_aimbot_button": "Secondary Aimbot Button",
+        "main_x_speed": "Main X Speed",
+        "main_y_speed": "Main Y Speed",
+        "sec_x_speed": "Secondary X Speed",
+        "sec_y_speed": "Secondary Y Speed",
+        "fov_color": "FOV Circle Color"
+    },
+    "triggerbot": {
+        "tb_fov_size": "TB FOV Size",
+        "tb_delay": "TB Delay",
+        "tb_cooldown": "TB Cooldown",
+        "enable_tb": "Enable TB",
+        "tb_button": "Triggerbot Button"
+    },
+    "config": {
+        "choose_config": "Choose a config",
+        "save": "Save",
+        "new_config": "New Config",
+        "load_config": "Load config",
+        "config_applied": "Config applied and model reloaded",
+        "config_saved": "Config saved",
+        "config_loaded": "Config loaded"
+    },
+    "buttons": {
+        "left_mouse": "Left Mouse Button",
+        "right_mouse": "Right Mouse Button",
+        "middle_mouse": "Middle Mouse Button",
+        "side_mouse_4": "Side Mouse 4 Button",
+        "side_mouse_5": "Side Mouse 5 Button"
+    }
+}

@@ -1,0 +1,60 @@
+{
+    "language_name": "中文",
+    "general": {
+        "general": "通用",
+        "aimbot": "自瞄",
+        "triggerbot": "扳機",
+        "config": "配置",
+        "status": "狀態",
+        "connected": "已連接",
+        "disconnected": "未連接",
+        "refresh_sources": "刷新NDI源",
+        "connect_source": "連接到源",
+        "appearance": "外觀",
+        "mode": "模式",
+        "color": "顏色",
+        "language": "語言",
+        "makcu_status": "MAKCU狀態",
+        "move_test": "移動測試",
+        "click_test": "點擊測試"
+    },
+    "aimbot": {
+        "x_speed": "X軸速度",
+        "y_speed": "Y軸速度",
+        "in_game_sens": "遊戲靈敏度",
+        "smoothing": "平滑度",
+        "smoothing_fov": "平滑視野",
+        "fov_size": "視野大小",
+        "enable_aim": "啟用自瞄",
+        "aimbot_button": "主要自瞄按鈕",
+        "sec_aimbot_button": "次要自瞄按鈕",
+        "main_x_speed": "主要X軸速度",
+        "main_y_speed": "主要Y軸速度",
+        "sec_x_speed": "次要X軸速度",
+        "sec_y_speed": "次要Y軸速度",
+        "fov_color": "視野圓圈顏色"
+    },
+    "triggerbot": {
+        "tb_fov_size": "扳機視野大小",
+        "tb_delay": "扳機延遲",
+        "tb_cooldown": "扳機冷卻",
+        "enable_tb": "啟用扳機",
+        "tb_button": "扳機按鈕"
+    },
+    "config": {
+        "choose_config": "選擇配置",
+        "save": "保存",
+        "new_config": "新配置",
+        "load_config": "加載配置",
+        "config_applied": "配置已應用並重新加載模型",
+        "config_saved": "配置已保存",
+        "config_loaded": "配置已加載"
+    },
+    "buttons": {
+        "left_mouse": "滑鼠左鍵",
+        "right_mouse": "滑鼠右鍵",
+        "middle_mouse": "滑鼠中鍵",
+        "side_mouse_4": "側鍵4",
+        "side_mouse_5": "側鍵5"
+    }
+}

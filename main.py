@@ -8,6 +8,9 @@ import cv2
 import tkinter as tk
 import os
 import json
+import glob
+import logging
+import pathlib
 
 from cyndilib.finder import Finder
 from cyndilib.receiver import Receiver
@@ -19,6 +22,21 @@ from config import config
 from mouse import Mouse, is_button_pressed
 from detection import load_model, perform_detection
 
+# Create data directory if it doesn't exist
+pathlib.Path("data").mkdir(exist_ok=True)
+
+# Setup detailed logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s() - %(message)s',
+    handlers=[
+        logging.FileHandler('data/bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger("COLORBOT")
+
 
 BUTTONS = {
     0: 'Left Mouse Button',
@@ -27,6 +45,56 @@ BUTTONS = {
     3: 'Side Mouse 4 Button',
     4: 'Side Mouse 5 Button'
 }
+
+class LanguageManager:
+    def __init__(self):
+        self.languages = {}
+        self.current_language = "english"
+        self.load_languages()
+        
+    def load_languages(self):
+        language_files = glob.glob("languages/*.json")
+        for file in language_files:
+            try:
+                with open(file, "r", encoding="utf-8") as f:
+                    lang_data = json.load(f)
+                    lang_name = os.path.basename(file).split(".")[0]
+                    self.languages[lang_name] = lang_data
+            except Exception as e:
+                print(f"Error loading language file {file}: {e}")
+        
+        # Ensure English is available as fallback
+        if "english" not in self.languages:
+            self.languages["english"] = {
+                "language_name": "English",
+                "general": {"status": "Status", "connected": "Connected", "disconnected": "Disconnected"},
+                "aimbot": {"x_speed": "X Speed", "y_speed": "Y Speed"},
+                "triggerbot": {"tb_fov_size": "TB FOV Size", "tb_delay": "TB Delay"},
+                "config": {"choose_config": "Choose a config", "save": "Save"}
+            }
+    
+    def get_language_names(self):
+        return [data.get("language_name", key) for key, data in self.languages.items()]
+    
+    def get_language_by_name(self, display_name):
+        for key, data in self.languages.items():
+            if data.get("language_name") == display_name:
+                return key
+        return "english"  # Default fallback
+    
+    def set_language(self, lang_key):
+        if lang_key in self.languages:
+            self.current_language = lang_key
+    
+    def get_text(self, section, key, default=None):
+        try:
+            return self.languages[self.current_language][section][key]
+        except (KeyError, TypeError):
+            # Try English as fallback
+            try:
+                return self.languages["english"][section][key]
+            except (KeyError, TypeError):
+                return default if default is not None else key
 
 def threaded_silent_move(controller, dx, dy):
     """Petit move-restore pour le mode Silent."""
@@ -41,22 +109,45 @@ class AimTracker:
     def __init__(self, app, target_fps=80):
         self.app = app
         # --- Params (avec valeurs fallback) ---
-        self.normal_x_speed = float(getattr(config, "normal_x_speed", 0.5))
-        self.normal_y_speed = float(getattr(config, "normal_y_speed", 0.5))
+        # Common parameters
         self.normalsmooth = float(getattr(config, "normalsmooth", 10))
         self.normalsmoothfov = float(getattr(config, "normalsmoothfov", 10))
         self.mouse_dpi = float(getattr(config, "mouse_dpi", 800))
         self.fovsize = float(getattr(config, "fovsize", 300))
+        self.in_game_sens = float(getattr(config, "in_game_sens", 7))
+        
+        # Main aimbot button parameters
+        self.main_x_speed = float(getattr(config, "main_x_speed", 0.5))
+        self.main_y_speed = float(getattr(config, "main_y_speed", 0.5))
+        
+        # Secondary aimbot button parameters
+        self.sec_x_speed = float(getattr(config, "sec_x_speed", 0.5))
+        self.sec_y_speed = float(getattr(config, "sec_y_speed", 0.5))
+        
+        # For backward compatibility
+        self.normal_x_speed = self.main_x_speed
+        self.normal_y_speed = self.main_y_speed
+        
+        # Triggerbot parameters
         self.tbfovsize = float(getattr(config, "tbfovsize", 70))
         self.tbdelay = float(getattr(config, "tbdelay", 0.08))
+        self.tbcooldown = float(getattr(config, "tbcooldown", 0.5))
         self.last_tb_click_time = 0.0
+        
+        # FOV colors
+        self.fov_color = getattr(config, "fov_color", "white")
+        self.fov_smooth_color = getattr(config, "fov_smooth_color", "cyan")
+        self.tb_fov_color = getattr(config, "tb_fov_color", "white")
 
-        self.in_game_sens = float(getattr(config, "in_game_sens", 7))
+        # Other settings
         self.color = getattr(config, "color", "yellow")
         self.mode = getattr(config, "mode", "Normal")
-        self.selected_mouse_button = getattr(config, "selected_mouse_button", 3),
-        self.selected_tb_btn= getattr(config, "selected_tb_btn", 3)
+        self.selected_mouse_button = getattr(config, "selected_mouse_button", 3)
+        self.selected_sec_mouse_button = getattr(config, "selected_sec_mouse_button", 4)
+        self.selected_tb_btn = getattr(config, "selected_tb_btn", 3)
         self.max_speed = float(getattr(config, "max_speed", 1000.0))
+        
+        logger.info(f"AimTracker initialized with main speeds: {self.main_x_speed}/{self.main_y_speed}, sec speeds: {self.sec_x_speed}/{self.sec_y_speed}")
 
         self.controller = Mouse()
         self.move_queue = queue.Queue(maxsize=50)
@@ -115,12 +206,35 @@ class AimTracker:
     def _draw_fovs(self, img, frame):
         center_x = int(frame.xres / 2)
         center_y = int(frame.yres / 2)
+        
+        # Get colors from config or use defaults
+        fov_color = getattr(config, "fov_color", self.fov_color)
+        fov_smooth_color = getattr(config, "fov_smooth_color", self.fov_smooth_color)
+        tb_fov_color = getattr(config, "tb_fov_color", self.tb_fov_color)
+        
+        # Convert color names to BGR
+        color_map = {
+            "white": (255, 255, 255),
+            "red": (0, 0, 255),
+            "green": (0, 255, 0),
+            "blue": (255, 0, 0),
+            "yellow": (0, 255, 255),
+            "cyan": (255, 255, 0),
+            "magenta": (255, 0, 255),
+            "orange": (0, 165, 255),
+            "purple": (128, 0, 128)
+        }
+        
+        fov_color_bgr = color_map.get(fov_color, (255, 255, 255))
+        fov_smooth_color_bgr = color_map.get(fov_smooth_color, (51, 255, 255))
+        tb_fov_color_bgr = color_map.get(tb_fov_color, (255, 255, 255))
+        
         if getattr(config, "enableaim", False):
-            cv2.circle(img, (center_x, center_y), int(getattr(config, "fovsize", self.fovsize)), (255, 255, 255), 2)
-            # Correct: cercle smoothing = normalsmoothFOV
-            cv2.circle(img, (center_x, center_y), int(getattr(config, "normalsmoothfov", self.normalsmoothfov)), (51, 255, 255), 2)
+            cv2.circle(img, (center_x, center_y), int(getattr(config, "fovsize", self.fovsize)), fov_color_bgr, 2)
+            # Smoothing circle
+            cv2.circle(img, (center_x, center_y), int(getattr(config, "normalsmoothfov", self.normalsmoothfov)), fov_smooth_color_bgr, 2)
         if getattr(config, "enabletb", False):
-            cv2.circle(img, (center_x, center_y), int(getattr(config, "tbfovsize", self.tbfovsize)), (255, 255, 255), 2)
+            cv2.circle(img, (center_x, center_y), int(getattr(config, "tbfovsize", self.tbfovsize)), tb_fov_color_bgr, 2)
 
     def track_once(self):
         if not getattr(self.app, "connected", False):
@@ -284,17 +398,36 @@ class AimTracker:
         mode = getattr(config, "mode", "Normal")
         if mode == "Normal":
             try:
-                if aim_enabled and selected_btn is not None and is_button_pressed(selected_btn):
-                    if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
-                        ndx *= float(getattr(config, "normal_x_speed", self.normal_x_speed)) / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
-                        ndy *= float(getattr(config, "normal_y_speed", self.normal_y_speed)) / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
+                main_btn = getattr(config, "selected_mouse_button", None)
+                sec_btn = getattr(config, "selected_sec_mouse_button", None)
+                
+                # Check which button is pressed and use appropriate speeds
+                main_button_pressed = main_btn is not None and is_button_pressed(main_btn)
+                sec_button_pressed = sec_btn is not None and is_button_pressed(sec_btn)
+                
+                if aim_enabled and (main_button_pressed or sec_button_pressed):
+                    # Get the appropriate speeds based on which button is pressed
+                    if main_button_pressed:
+                        x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
+                        y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
+                        logger.debug(f"Using main button speeds: {x_speed}/{y_speed}")
                     else:
-                        ndx *= float(getattr(config, "normal_x_speed", self.normal_x_speed))
-                        ndy *= float(getattr(config, "normal_y_speed", self.normal_y_speed))
+                        x_speed = float(getattr(config, "sec_x_speed", self.sec_x_speed))
+                        y_speed = float(getattr(config, "sec_y_speed", self.sec_y_speed))
+                        logger.debug(f"Using secondary button speeds: {x_speed}/{y_speed}")
+                    
+                    # Apply smoothing if within smoothing FOV
+                    if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
+                        ndx *= x_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
+                        ndy *= y_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
+                    else:
+                        ndx *= x_speed
+                        ndy *= y_speed
+                    
                     ddx, ddy = self._clip_movement(ndx, ndy)
                     self.move_queue.put((ddx, ddy, 0.005))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error in aim movement: {e}", exc_info=True)
 
             # Triggerbot
             try:
@@ -319,9 +452,12 @@ class AimTracker:
 
                     if detections or distance_to_center < float(getattr(config, "tbfovsize", self.tbfovsize)):
                         now = time.time()
-                        if now - self.last_tb_click_time >= float(getattr(config, "tbdelay", self.tbdelay)):
+                        tb_delay = float(getattr(config, "tbdelay", self.tbdelay))
+                        tb_cooldown = float(getattr(config, "tbcooldown", self.tbcooldown))
+                        
+                        if now - self.last_tb_click_time >= tb_delay:
                             self.controller.click()
-                            self.last_tb_click_time = now
+                            self.last_tb_click_time = now + tb_cooldown
             except Exception as e:
                 print("[Triggerbot error]", e)
 
@@ -339,8 +475,15 @@ class ViewerApp(ctk.CTk):
         self.title("CUPSY COLORBOT")
         self.geometry("400x700")
 
+        # Language support
+        self.lang_manager = LanguageManager()
+        # Set initial language from config
+        if hasattr(config, "language") and config.language in self.lang_manager.languages:
+            self.lang_manager.set_language(config.language)
+            logger.info(f"Initialized language to {config.language}")
+        
         # Dicos pour MAJ UI <-> config
-        self._slider_widgets = {}   # key -> {"slider": widget, "label": widget, "min":..., "max":...}
+        self._slider_widgets = {}   # key -> {"slider": widget, "label": widget, "min":..., "max":..., "entry": widget}
         self._checkbox_vars = {}    # key -> tk.BooleanVar
         self._option_widgets = {}   # key -> CTkOptionMenu
 
@@ -400,8 +543,17 @@ class ViewerApp(ctk.CTk):
         self._load_initial_config()
 
     # ---------- Helpers de mapping UI ----------
-    def _register_slider(self, key, slider, label, vmin, vmax, is_float):
-        self._slider_widgets[key] = {"slider": slider, "label": label, "min": vmin, "max": vmax, "is_float": is_float}
+    def _register_slider(self, key, slider, label, vmin, vmax, is_float, entry=None):
+        self._slider_widgets[key] = {
+            "slider": slider, 
+            "label": label, 
+            "min": vmin, 
+            "max": vmax, 
+            "is_float": is_float, 
+            "entry": entry,
+            "entry_var": getattr(self, "_last_entry_var", None),
+            "trace_callback": getattr(self, "_last_trace_callback", None)
+        }
 
     def _load_initial_config(self):
         try:
@@ -441,6 +593,21 @@ class ViewerApp(ctk.CTk):
         current = w["label"].cget("text")
         prefix = current.split(":")[0] if ":" in current else txt.split(":")[0]
         w["label"].configure(text=f"{prefix}: {v:.2f}" if is_float else f"{prefix}: {int(v)}")
+        
+        # Update entry if available - don't create a new StringVar, just update the value
+        if w.get("entry") is not None and w.get("entry_var") is not None:
+            # Temporarily remove trace to avoid recursive callbacks
+            entry_var = w["entry_var"]
+            traces = entry_var.trace_info()
+            for trace_type, trace_id in traces:
+                if trace_type == "write":
+                    entry_var.trace_remove("write", trace_id)
+                    
+            # Update the value
+            entry_var.set(f"{v:.2f}" if is_float else str(int(v)))
+            
+            # Re-add the trace
+            entry_var.trace_add("write", w["trace_callback"])
 
     def _set_checkbox_value(self, key, value_bool):
         var = self._checkbox_vars.get(key)
@@ -482,22 +649,44 @@ class ViewerApp(ctk.CTk):
 
     def _get_current_settings(self):
         return {
-            "normal_x_speed": getattr(config, "normal_x_speed", 0.5),
-            "normal_y_speed": getattr(config, "normal_y_speed", 0.5),
+            # Backward compatibility
+            "normal_x_speed": getattr(config, "main_x_speed", 0.5),
+            "normal_y_speed": getattr(config, "main_y_speed", 0.5),
+            
+            # Main aimbot button parameters
+            "main_x_speed": getattr(config, "main_x_speed", 0.5),
+            "main_y_speed": getattr(config, "main_y_speed", 0.5),
+            
+            # Secondary aimbot button parameters
+            "sec_x_speed": getattr(config, "sec_x_speed", 0.5),
+            "sec_y_speed": getattr(config, "sec_y_speed", 0.5),
+            
+            # Common parameters
             "normalsmooth": getattr(config, "normalsmooth", 10),
             "normalsmoothfov": getattr(config, "normalsmoothfov", 10),
             "mouse_dpi" : getattr(config, "mouse_dpi", 800),
             "fovsize": getattr(config, "fovsize", 300),
+            
+            # FOV colors
+            "fov_color": getattr(config, "fov_color", "white"),
+            "fov_smooth_color": getattr(config, "fov_smooth_color", "cyan"),
+            "tb_fov_color": getattr(config, "tb_fov_color", "white"),
+            
+            # Triggerbot parameters
             "tbfovsize": getattr(config, "tbfovsize", 70),
             "tbdelay": getattr(config, "tbdelay", 0.08),
+            "tbcooldown": getattr(config, "tbcooldown", 0.5),
+            
+            # Other settings
             "in_game_sens": getattr(config, "in_game_sens", 7),
             "color": getattr(config, "color", "yellow"),
             "mode": getattr(config, "mode", "Normal"),
             "enableaim": getattr(config, "enableaim", False),
             "enabletb": getattr(config, "enabletb", False),
             "selected_mouse_button": getattr(config, "selected_mouse_button", 3),
-            "selected_tb_btn": getattr(config, "selected_tb_btn", 3)
-
+            "selected_sec_mouse_button": getattr(config, "selected_sec_mouse_button", 4),
+            "selected_tb_btn": getattr(config, "selected_tb_btn", 3),
+            "language": self.lang_manager.current_language
         }
 
     def _apply_settings(self, data, config_name=None):
@@ -624,82 +813,181 @@ class ViewerApp(ctk.CTk):
 
     # ----------------------- UI BUILDERS -----------------------
     def _build_general_tab(self):
-        self.status_label = ctk.CTkLabel(self.tab_general, text="Status: Disconnected")
+        self.status_label = ctk.CTkLabel(self.tab_general, text=f"{self.lang_manager.get_text('general', 'status', 'Status')}: {self.lang_manager.get_text('general', 'disconnected', 'Disconnected')}")
         self.status_label.pack(pady=5, anchor="w")
 
         self.source_option = ctk.CTkOptionMenu(self.tab_general, values=["(searching...)"], command=self._on_source_selected)
         self.source_option.pack(pady=5, fill="x")
 
-        ctk.CTkButton(self.tab_general, text="Refresh NDI Sources", command=self._refresh_sources).pack(pady=5, fill="x")
-        ctk.CTkButton(self.tab_general, text="Connect to Source", command=self._connect_to_selected).pack(pady=5, fill="x")
-        #ctk.CTkButton(self.tab_general, text="Toggle Rage Mode", command=self._toggle_rage).pack(pady=5, fill="x")
+        ctk.CTkButton(self.tab_general, text=self.lang_manager.get_text('general', 'refresh_sources', "Refresh NDI Sources"), command=self._refresh_sources).pack(pady=5, fill="x")
+        ctk.CTkButton(self.tab_general, text=self.lang_manager.get_text('general', 'connect_source', "Connect to Source"), command=self._connect_to_selected).pack(pady=5, fill="x")
+        
+        # MAKCU Connection Status
+        self.makcu_status_frame = ctk.CTkFrame(self.tab_general)
+        self.makcu_status_frame.pack(pady=5, fill="x")
+        ctk.CTkLabel(self.makcu_status_frame, text=self.lang_manager.get_text('general', 'makcu_status', "MAKCU Status")).pack(side="left", padx=5)
+        self.makcu_status_indicator = ctk.CTkLabel(self.makcu_status_frame, text="●", text_color="red")
+        self.makcu_status_indicator.pack(side="right", padx=5)
+        
+        # Move and Click Test buttons
+        test_frame = ctk.CTkFrame(self.tab_general)
+        test_frame.pack(pady=5, fill="x")
+        ctk.CTkButton(test_frame, text=self.lang_manager.get_text('general', 'move_test', "Move Test"), 
+                     command=self._test_move, width=100).pack(side="left", padx=5, pady=5, expand=True, fill="x")
+        ctk.CTkButton(test_frame, text=self.lang_manager.get_text('general', 'click_test', "Click Test"), 
+                     command=self._test_click, width=100).pack(side="right", padx=5, pady=5, expand=True, fill="x")
 
-        ctk.CTkLabel(self.tab_general, text="Apparence").pack(pady=5)
+        ctk.CTkLabel(self.tab_general, text=self.lang_manager.get_text('general', 'appearance', "Appearance")).pack(pady=5)
         ctk.CTkOptionMenu(self.tab_general, values=["Dark", "Light"], command=self._on_appearance_selected).pack(pady=5, fill="x")
 
-        ctk.CTkLabel(self.tab_general, text="Mode").pack(pady=5)
+        # Language selector
+        ctk.CTkLabel(self.tab_general, text=self.lang_manager.get_text('general', 'language', "Language")).pack(pady=5)
+        self.language_option = ctk.CTkOptionMenu(
+            self.tab_general, 
+            values=self.lang_manager.get_language_names(),
+            command=self._on_language_selected
+        )
+        self.language_option.set(self.lang_manager.languages[self.lang_manager.current_language].get("language_name", "English"))
+        self.language_option.pack(pady=5, fill="x")
+
+        ctk.CTkLabel(self.tab_general, text=self.lang_manager.get_text('general', 'mode', "Mode")).pack(pady=5)
         self.mode_option = ctk.CTkOptionMenu(self.tab_general, values=["Normal"], command=self._on_mode_selected)
         self.mode_option.pack(pady=5, fill="x")
         self._option_widgets["mode"] = self.mode_option
 
-        ctk.CTkLabel(self.tab_general, text="Couleur").pack(pady=5)
+        ctk.CTkLabel(self.tab_general, text=self.lang_manager.get_text('general', 'color', "Color")).pack(pady=5)
         self.color_option = ctk.CTkOptionMenu(self.tab_general, values=["yellow", "purple"], command=self._on_color_selected)
         self.color_option.pack(pady=5, fill="x")
         self._option_widgets["color"] = self.color_option
 
     def _build_aimbot_tab(self):
-        # X Speed
-        s, l = self._add_slider_with_label(self.tab_aimbot, "X Speed", 0.1, 2000, float(getattr(config, "normal_x_speed", 0.5)), self._on_normal_x_speed_changed, is_float=True)
-        self._register_slider("normal_x_speed", s, l, 0.1, 2000, True)
-        # Y Speed
-        s, l = self._add_slider_with_label(self.tab_aimbot, "Y Speed", 0.1, 2000, float(getattr(config, "normal_y_speed", 0.5)), self._on_normal_y_speed_changed, is_float=True)
-        self._register_slider("normal_y_speed", s, l, 0.1, 2000, True)
-        # In-game sens
-        s, l = self._add_slider_with_label(self.tab_aimbot, "In-game sens", 0.1, 2000, float(getattr(config, "in_game_sens", 7)), self._on_config_in_game_sens_changed, is_float=True)
-        self._register_slider("in_game_sens", s, l, 0.1, 2000, True)
-        # Smoothing
-        s, l = self._add_slider_with_label(self.tab_aimbot, "Smoothing", 1, 30, float(getattr(config, "normalsmooth", 10)), self._on_config_normal_smooth_changed, is_float=True)
-        self._register_slider("normalsmooth", s, l, 1, 30, True)
-        # Smoothing FOV
-        s, l = self._add_slider_with_label(self.tab_aimbot, "Smoothing FOV", 1, 30, float(getattr(config, "normalsmoothfov", 10)), self._on_config_normal_smoothfov_changed, is_float=True)
-        self._register_slider("normalsmoothfov", s, l, 1, 30, True)
-        # FOV Size
-        s, l = self._add_slider_with_label(self.tab_aimbot, "FOV Size", 1, 1000, float(getattr(config, "fovsize", 300)), self._on_fovsize_changed, is_float=True)
-        self._register_slider("fovsize", s, l, 1, 1000, True)
-
+        # Create a scrollable frame inside the tab
+        self.aimbot_scrollable_frame = ctk.CTkScrollableFrame(self.tab_aimbot)
+        self.aimbot_scrollable_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
+        # Common settings
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text="--- Common Settings ---", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # In-game sens
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'in_game_sens', "In-game sens"), 0.1, 2000, float(getattr(config, "in_game_sens", 7)), self._on_config_in_game_sens_changed, is_float=True)
+        self._register_slider("in_game_sens", s, l, 0.1, 2000, True, e)
+        
+        # Smoothing
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'smoothing', "Smoothing"), 1, 30, float(getattr(config, "normalsmooth", 10)), self._on_config_normal_smooth_changed, is_float=True)
+        self._register_slider("normalsmooth", s, l, 1, 30, True, e)
+        
+        # Smoothing FOV
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'smoothing_fov', "Smoothing FOV"), 1, 30, float(getattr(config, "normalsmoothfov", 10)), self._on_config_normal_smoothfov_changed, is_float=True)
+        self._register_slider("normalsmoothfov", s, l, 1, 30, True, e)
+        
+        # FOV Size
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'fov_size', "FOV Size"), 1, 1000, float(getattr(config, "fovsize", 300)), self._on_fovsize_changed, is_float=True)
+        self._register_slider("fovsize", s, l, 1, 1000, True, e)
+        
+        # FOV Color
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text=self.lang_manager.get_text('aimbot', 'fov_color', "FOV Circle Color")).pack(pady=5, anchor="w")
+        self.fov_color_option = ctk.CTkOptionMenu(
+            self.aimbot_scrollable_frame,
+            values=["white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple"],
+            command=self._on_fov_color_selected
+        )
+        self.fov_color_option.set(getattr(config, "fov_color", "white"))
+        self.fov_color_option.pack(pady=5, fill="x")
+        self._option_widgets["fov_color"] = self.fov_color_option
+        
+        # FOV Smooth Color
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text="FOV Smooth Circle Color").pack(pady=5, anchor="w")
+        self.fov_smooth_color_option = ctk.CTkOptionMenu(
+            self.aimbot_scrollable_frame,
+            values=["white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple"],
+            command=self._on_fov_smooth_color_selected
+        )
+        self.fov_smooth_color_option.set(getattr(config, "fov_smooth_color", "cyan"))
+        self.fov_smooth_color_option.pack(pady=5, fill="x")
+        self._option_widgets["fov_smooth_color"] = self.fov_smooth_color_option
 
         # Enable Aim
         self.var_enableaim = tk.BooleanVar(value=getattr(config, "enableaim", False))
-        ctk.CTkCheckBox(self.tab_aimbot, text="Enable Aim", variable=self.var_enableaim, command=self._on_enableaim_changed).pack(pady=6, anchor="w")
+        ctk.CTkCheckBox(self.aimbot_scrollable_frame, text=self.lang_manager.get_text('aimbot', 'enable_aim', "Enable Aim"), variable=self.var_enableaim, command=self._on_enableaim_changed).pack(pady=6, anchor="w")
         self._checkbox_vars["enableaim"] = self.var_enableaim
 
-        ctk.CTkLabel(self.tab_aimbot, text="Aimbot Button").pack(pady=5, anchor="w")
+        # Main Aimbot Button section
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text="--- Main Aimbot Button ---", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Main Aimbot Button
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text=self.lang_manager.get_text('aimbot', 'aimbot_button', "Main Aimbot Button")).pack(pady=5, anchor="w")
         self.aimbot_button_option = ctk.CTkOptionMenu(
-            self.tab_aimbot,
+            self.aimbot_scrollable_frame,
             values=list(BUTTONS.values()),
             command=self._on_aimbot_button_selected
         )
         self.aimbot_button_option.pack(pady=5, fill="x")
         self._option_widgets["aimbot_button"] = self.aimbot_button_option
+        
+        # Main X Speed
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'main_x_speed', "Main X Speed"), 0.1, 2000, float(getattr(config, "main_x_speed", 0.5)), self._on_main_x_speed_changed, is_float=True)
+        self._register_slider("main_x_speed", s, l, 0.1, 2000, True, e)
+        
+        # Main Y Speed
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'main_y_speed', "Main Y Speed"), 0.1, 2000, float(getattr(config, "main_y_speed", 0.5)), self._on_main_y_speed_changed, is_float=True)
+        self._register_slider("main_y_speed", s, l, 0.1, 2000, True, e)
+        
+        # Secondary Aimbot Button section
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text="--- Secondary Aimbot Button ---", font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Secondary Aimbot Button
+        ctk.CTkLabel(self.aimbot_scrollable_frame, text=self.lang_manager.get_text('aimbot', 'sec_aimbot_button', "Secondary Aimbot Button")).pack(pady=5, anchor="w")
+        self.sec_aimbot_button_option = ctk.CTkOptionMenu(
+            self.aimbot_scrollable_frame,
+            values=list(BUTTONS.values()),
+            command=self._on_sec_aimbot_button_selected
+        )
+        self.sec_aimbot_button_option.pack(pady=5, fill="x")
+        self._option_widgets["sec_aimbot_button"] = self.sec_aimbot_button_option
+        
+        # Secondary X Speed
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_x_speed', "Secondary X Speed"), 0.1, 2000, float(getattr(config, "sec_x_speed", 0.5)), self._on_sec_x_speed_changed, is_float=True)
+        self._register_slider("sec_x_speed", s, l, 0.1, 2000, True, e)
+        
+        # Secondary Y Speed
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_y_speed', "Secondary Y Speed"), 0.1, 2000, float(getattr(config, "sec_y_speed", 0.5)), self._on_sec_y_speed_changed, is_float=True)
+        self._register_slider("sec_y_speed", s, l, 0.1, 2000, True, e)
 
 
     def _build_tb_tab(self):
+        # Create a scrollable frame inside the tab
+        self.tb_scrollable_frame = ctk.CTkScrollableFrame(self.tab_tb)
+        self.tb_scrollable_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
         # TB FOV Size
-        s, l = self._add_slider_with_label(self.tab_tb, "TB FOV Size", 1, 300, float(getattr(config, "tbfovsize", 70)), self._on_tbfovsize_changed, is_float=True)
-        self._register_slider("tbfovsize", s, l, 1, 300, True)
+        s, l, e = self._add_slider_with_label(self.tb_scrollable_frame, self.lang_manager.get_text('triggerbot', 'tb_fov_size', "TB FOV Size"), 1, 300, float(getattr(config, "tbfovsize", 70)), self._on_tbfovsize_changed, is_float=True)
+        self._register_slider("tbfovsize", s, l, 1, 300, True, e)
         # TB Delay
-        s, l = self._add_slider_with_label(self.tab_tb, "TB Delay", 0.0, 1.0, float(getattr(config, "tbdelay", 0.08)), self._on_tbdelay_changed, is_float=True)
-        self._register_slider("tbdelay", s, l, 0.0, 1.0, True)
+        s, l, e = self._add_slider_with_label(self.tb_scrollable_frame, self.lang_manager.get_text('triggerbot', 'tb_delay', "TB Delay"), 0.0, 1.0, float(getattr(config, "tbdelay", 0.08)), self._on_tbdelay_changed, is_float=True)
+        self._register_slider("tbdelay", s, l, 0.0, 1.0, True, e)
+        # TB Cooldown
+        s, l, e = self._add_slider_with_label(self.tb_scrollable_frame, self.lang_manager.get_text('triggerbot', 'tb_cooldown', "TB Cooldown"), 0.0, 5.0, float(getattr(config, "tbcooldown", 0.5)), self._on_tbcooldown_changed, is_float=True)
+        self._register_slider("tbcooldown", s, l, 0.0, 5.0, True, e)
+
+        # TB FOV Color
+        ctk.CTkLabel(self.tb_scrollable_frame, text="TB FOV Circle Color").pack(pady=5, anchor="w")
+        self.tb_fov_color_option = ctk.CTkOptionMenu(
+            self.tb_scrollable_frame,
+            values=["white", "red", "green", "blue", "yellow", "cyan", "magenta", "orange", "purple"],
+            command=self._on_tb_fov_color_selected
+        )
+        self.tb_fov_color_option.set(getattr(config, "tb_fov_color", "white"))
+        self.tb_fov_color_option.pack(pady=5, fill="x")
+        self._option_widgets["tb_fov_color"] = self.tb_fov_color_option
 
         # Enable TB
         self.var_enabletb = tk.BooleanVar(value=getattr(config, "enabletb", False))
-        ctk.CTkCheckBox(self.tab_tb, text="Enable TB", variable=self.var_enabletb, command=self._on_enabletb_changed).pack(pady=6, anchor="w")
+        ctk.CTkCheckBox(self.tb_scrollable_frame, text=self.lang_manager.get_text('triggerbot', 'enable_tb', "Enable TB"), variable=self.var_enabletb, command=self._on_enabletb_changed).pack(pady=6, anchor="w")
         self._checkbox_vars["enabletb"] = self.var_enabletb
 
-        ctk.CTkLabel(self.tab_tb, text="Triggerbot Button").pack(pady=5, anchor="w")
+        ctk.CTkLabel(self.tb_scrollable_frame, text=self.lang_manager.get_text('triggerbot', 'tb_button', "Triggerbot Button")).pack(pady=5, anchor="w")
         self.tb_button_option = ctk.CTkOptionMenu(
-            self.tab_tb,
+            self.tb_scrollable_frame,
             values=list(BUTTONS.values()),
             command=self._on_tb_button_selected
         )
@@ -709,32 +997,116 @@ class ViewerApp(ctk.CTk):
 
     # Generic slider helper (parent-aware)
     def _add_slider_with_label(self, parent, text, min_val, max_val, init_val, command, is_float=False):
-        frame = ctk.CTkFrame(parent)
-        frame.pack(padx=12, pady=6, fill="x")
-
-        label = ctk.CTkLabel(frame, text=f"{text}: {init_val:.2f}" if is_float else f"{text}: {init_val}")
+        outer_frame = ctk.CTkFrame(parent)
+        outer_frame.pack(padx=12, pady=6, fill="x")
+        
+        # Top row with label and entry
+        top_frame = ctk.CTkFrame(outer_frame)
+        top_frame.pack(fill="x")
+        
+        label = ctk.CTkLabel(top_frame, text=f"{text}: {init_val:.2f}" if is_float else f"{text}: {init_val}")
         label.pack(side="left")
-
+        
+        # Create entry for direct value input
+        entry_var = tk.StringVar(value=f"{init_val:.2f}" if is_float else str(init_val))
+        entry = ctk.CTkEntry(top_frame, width=60, textvariable=entry_var)
+        entry.pack(side="right", padx=5)
+        
+        # Bottom row with slider
+        slider_frame = ctk.CTkFrame(outer_frame)
+        slider_frame.pack(fill="x", pady=(5, 0))
+        
         steps = 100 if is_float else max(1, int(max_val - min_val))
-        slider = ctk.CTkSlider(frame, from_=min_val, to=max_val, number_of_steps=steps,
-                               command=lambda v: self._slider_callback(v, label, text, command, is_float))
+        slider = ctk.CTkSlider(slider_frame, from_=min_val, to=max_val, number_of_steps=steps,
+                              command=lambda v: self._slider_callback(v, label, text, command, is_float, entry_var))
         slider.set(init_val)
-        slider.pack(side="right", fill="x", expand=True)
-        return slider, label
+        slider.pack(fill="x", expand=True)
+        
+        # Entry callback
+        def on_entry_change(var_name, index, mode):
+            try:
+                value = float(entry_var.get()) if is_float else int(float(entry_var.get()))
+                value = max(min_val, min(max_val, value))
+                # Temporarily remove slider callback to avoid recursive callbacks
+                slider_command = slider.cget("command")
+                slider.configure(command=None)
+                slider.set(value)
+                slider.configure(command=slider_command)
+                command(value)
+                label.configure(text=f"{text}: {value:.2f}" if is_float else f"{text}: {value}")
+            except ValueError:
+                pass  # Ignore invalid inputs
+        
+        # Add trace and store the callback function for later use
+        trace_id = entry_var.trace_add("write", on_entry_change)
+        
+        # Return the widgets and also store the entry_var and trace_callback
+        result = (slider, label, entry)
+        # Store additional info for later use in _set_slider_value
+        self._last_entry_var = entry_var
+        self._last_trace_callback = on_entry_change
+        
+        return result
 
-    def _slider_callback(self, value, label, text, command, is_float):
+    def _slider_callback(self, value, label, text, command, is_float, entry_var=None):
         val = float(value) if is_float else int(round(value))
         label.configure(text=f"{text}: {val:.2f}" if is_float else f"{text}: {val}")
+        
+        if entry_var is not None:
+            # Temporarily remove trace to avoid recursive callbacks
+            traces = entry_var.trace_info()
+            trace_ids = []
+            for trace_type, trace_id in traces:
+                if trace_type == "write":
+                    entry_var.trace_remove("write", trace_id)
+                    trace_ids.append((trace_type, trace_id))
+            
+            # Update entry value
+            entry_var.set(f"{val:.2f}" if is_float else str(val))
+            
+            # Re-add traces
+            for trace_type, trace_id in trace_ids:
+                # Find the callback in our slider widgets
+                for widget_dict in self._slider_widgets.values():
+                    if widget_dict.get("entry_var") == entry_var and widget_dict.get("trace_callback"):
+                        entry_var.trace_add("write", widget_dict["trace_callback"])
+                        break
+        
         command(val)
 
     # ----------------------- Callbacks -----------------------
-    def _on_normal_x_speed_changed(self, val):
+    def _on_main_x_speed_changed(self, val):
+        config.main_x_speed = val
+        self.tracker.main_x_speed = val
+        # For backward compatibility
         config.normal_x_speed = val
         self.tracker.normal_x_speed = val
+        logger.debug(f"Main X Speed changed to {val}")
 
-    def _on_normal_y_speed_changed(self, val):
+    def _on_main_y_speed_changed(self, val):
+        config.main_y_speed = val
+        self.tracker.main_y_speed = val
+        # For backward compatibility
         config.normal_y_speed = val
         self.tracker.normal_y_speed = val
+        logger.debug(f"Main Y Speed changed to {val}")
+        
+    def _on_sec_x_speed_changed(self, val):
+        config.sec_x_speed = val
+        self.tracker.sec_x_speed = val
+        logger.debug(f"Secondary X Speed changed to {val}")
+        
+    def _on_sec_y_speed_changed(self, val):
+        config.sec_y_speed = val
+        self.tracker.sec_y_speed = val
+        logger.debug(f"Secondary Y Speed changed to {val}")
+        
+    # For backward compatibility
+    def _on_normal_x_speed_changed(self, val):
+        self._on_main_x_speed_changed(val)
+
+    def _on_normal_y_speed_changed(self, val):
+        self._on_main_y_speed_changed(val)
 
     def _on_config_in_game_sens_changed(self, val):
         config.in_game_sens = val
@@ -761,7 +1133,13 @@ class ViewerApp(ctk.CTk):
                 config.selected_tb_btn = key
                 break
         self._log_config(f"Triggerbot button set to {val} ({key})")
-
+    
+    def _on_sec_aimbot_button_selected(self, val):
+        for key, name in BUTTONS.items():
+            if name == val:
+                config.selected_sec_mouse_button = key
+                break
+        self._log_config(f"Secondary aimbot button set to {val} ({key})")
 
     def _on_fovsize_changed(self, val):
         config.fovsize = val
@@ -770,10 +1148,236 @@ class ViewerApp(ctk.CTk):
     def _on_tbdelay_changed(self, val):
         config.tbdelay = val
         self.tracker.tbdelay = val
+    
+    def _on_tbcooldown_changed(self, val):
+        config.tbcooldown = val
+        if not hasattr(self.tracker, "tbcooldown"):
+            self.tracker.tbcooldown = val
+        else:
+            self.tracker.tbcooldown = val
 
     def _on_tbfovsize_changed(self, val):
         config.tbfovsize = val
         self.tracker.tbfovsize = val
+        
+    def _on_language_selected(self, val):
+        lang_key = self.lang_manager.get_language_by_name(val)
+        self.lang_manager.set_language(lang_key)
+        logger.info(f"Language changed to {val} ({lang_key})")
+        self._log_config(f"Language changed to {val}")
+        
+        # Update all UI elements with the new language
+        self._update_ui_language()
+    
+    def _update_ui_language(self):
+        """Update all UI elements with the current language"""
+        logger.debug("Updating UI with new language")
+        
+        try:
+            # A simpler approach: just update the tab names in the segmented button
+            # and keep the existing tab references
+            
+            # Get current tab
+            current_tab = self.tabview.get()
+            
+            # Create mapping from old tab names to new tab names
+            old_to_new_mapping = {}
+            for tab_name in self.tabview._tab_dict.keys():
+                if "⚙️" in tab_name:  # General tab
+                    old_to_new_mapping[tab_name] = "⚙️ " + self.lang_manager.get_text('general', 'general', "Général")
+                elif "🎯" in tab_name:  # Aimbot tab
+                    old_to_new_mapping[tab_name] = "🎯 " + self.lang_manager.get_text('general', 'aimbot', "Aimbot")
+                elif "🔫" in tab_name:  # Triggerbot tab
+                    old_to_new_mapping[tab_name] = "🔫 " + self.lang_manager.get_text('general', 'triggerbot', "Triggerbot")
+                elif "💾" in tab_name:  # Config tab
+                    old_to_new_mapping[tab_name] = "💾 " + self.lang_manager.get_text('general', 'config', "Config")
+            
+            # Create new tab dictionary with updated names
+            new_tab_dict = {}
+            for old_name, tab_frame in self.tabview._tab_dict.items():
+                if old_name in old_to_new_mapping:
+                    new_name = old_to_new_mapping[old_name]
+                    new_tab_dict[new_name] = tab_frame
+                else:
+                    new_tab_dict[old_name] = tab_frame  # Keep unchanged if not in mapping
+            
+            # Update tab names in segmented button
+            new_values = list(new_tab_dict.keys())
+            self.tabview._segmented_button.configure(values=new_values)
+            
+            # Update the tab dictionary
+            self.tabview._tab_dict = new_tab_dict
+            
+            # Update tab references
+            for tab_name, tab_frame in new_tab_dict.items():
+                if "⚙️" in tab_name:  # General tab
+                    self.tab_general = tab_frame
+                elif "🎯" in tab_name:  # Aimbot tab
+                    self.tab_aimbot = tab_frame
+                elif "🔫" in tab_name:  # Triggerbot tab
+                    self.tab_tb = tab_frame
+                elif "💾" in tab_name:  # Config tab
+                    self.tab_config = tab_frame
+            
+            # Try to restore the previously selected tab
+            # Find the new name for the current tab
+            new_current_tab = None
+            for old_name, new_name in old_to_new_mapping.items():
+                if old_name == current_tab:
+                    new_current_tab = new_name
+                    break
+            
+            # Set the current tab
+            if new_current_tab:
+                self.tabview.set(new_current_tab)
+            else:
+                # Default to first tab if we can't find a match
+                self.tabview.set(new_values[0])
+                
+            # Now update the text of all widgets
+            # Update General tab
+            self.status_label.configure(text=f"{self.lang_manager.get_text('general', 'status', 'Status')}: " +
+                                        (f"{self.lang_manager.get_text('general', 'connected', 'Connected')} - {self.selected_source}" 
+                                         if self.connected else 
+                                         self.lang_manager.get_text('general', 'disconnected', 'Disconnected')))
+            
+            # Update buttons in General tab
+            for widget in self.tab_general.winfo_children():
+                if isinstance(widget, ctk.CTkButton):
+                    if "Refresh" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'refresh_sources', "Refresh NDI Sources"))
+                    elif "Connect" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'connect_source', "Connect to Source"))
+            
+            # Update labels in General tab
+            for widget in self.tab_general.winfo_children():
+                if isinstance(widget, ctk.CTkLabel) and not widget == self.status_label:
+                    if "Appearance" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'appearance', "Appearance"))
+                    elif "Language" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'language', "Language"))
+                    elif "Mode" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'mode', "Mode"))
+                    elif "Color" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('general', 'color', "Color"))
+                elif isinstance(widget, ctk.CTkFrame):
+                    for child in widget.winfo_children():
+                        if isinstance(child, ctk.CTkLabel) and "MAKCU" in child.cget("text"):
+                            child.configure(text=self.lang_manager.get_text('general', 'makcu_status', "MAKCU Status"))
+                        elif isinstance(child, ctk.CTkButton):
+                            if "Move Test" in child.cget("text"):
+                                child.configure(text=self.lang_manager.get_text('general', 'move_test', "Move Test"))
+                            elif "Click Test" in child.cget("text"):
+                                child.configure(text=self.lang_manager.get_text('general', 'click_test', "Click Test"))
+            
+            # Update Aimbot tab
+            for key, widget_dict in self._slider_widgets.items():
+                label = widget_dict["label"]
+                current = label.cget("text")
+                if ":" in current:
+                    prefix = current.split(":")[0].strip()
+                    value = current.split(":")[1].strip()
+                    
+                    if "X Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'x_speed', "X Speed")
+                    elif "Y Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'y_speed', "Y Speed")
+                    elif "In-game sens" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'in_game_sens', "In-game sens")
+                    elif "Smoothing FOV" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'smoothing_fov', "Smoothing FOV")
+                    elif "Smoothing" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'smoothing', "Smoothing")
+                    elif "FOV Size" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'fov_size', "FOV Size")
+                    elif "TB FOV Size" in prefix:
+                        new_prefix = self.lang_manager.get_text('triggerbot', 'tb_fov_size', "TB FOV Size")
+                    elif "TB Delay" in prefix:
+                        new_prefix = self.lang_manager.get_text('triggerbot', 'tb_delay', "TB Delay")
+                    elif "TB Cooldown" in prefix:
+                        new_prefix = self.lang_manager.get_text('triggerbot', 'tb_cooldown', "TB Cooldown")
+                    elif "Main X Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'main_x_speed', "Main X Speed")
+                    elif "Main Y Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'main_y_speed', "Main Y Speed")
+                    elif "Secondary X Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'sec_x_speed', "Secondary X Speed")
+                    elif "Secondary Y Speed" in prefix:
+                        new_prefix = self.lang_manager.get_text('aimbot', 'sec_y_speed', "Secondary Y Speed")
+                    else:
+                        new_prefix = prefix
+                        
+                    label.configure(text=f"{new_prefix}: {value}")
+            
+            # Update checkboxes in the scrollable frame
+            for widget in self.aimbot_scrollable_frame.winfo_children():
+                if isinstance(widget, ctk.CTkCheckBox):
+                    if "Enable Aim" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('aimbot', 'enable_aim', "Enable Aim"))
+            
+            for widget in self.tb_scrollable_frame.winfo_children():
+                if isinstance(widget, ctk.CTkCheckBox):
+                    if "Enable TB" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('triggerbot', 'enable_tb', "Enable TB"))
+            
+            # Update button labels in the aimbot scrollable frame
+            for widget in self.aimbot_scrollable_frame.winfo_children():
+                if isinstance(widget, ctk.CTkLabel):
+                    if "--- Common Settings ---" in widget.cget("text"):
+                        widget.configure(text="--- Common Settings ---")
+                    elif "--- Main Aimbot Button ---" in widget.cget("text"):
+                        widget.configure(text="--- Main Aimbot Button ---")
+                    elif "--- Secondary Aimbot Button ---" in widget.cget("text"):
+                        widget.configure(text="--- Secondary Aimbot Button ---")
+                    elif "Main Aimbot Button" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('aimbot', 'aimbot_button', "Main Aimbot Button"))
+                    elif "Secondary Aimbot Button" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('aimbot', 'sec_aimbot_button', "Secondary Aimbot Button"))
+                    elif "FOV Circle Color" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('aimbot', 'fov_color', "FOV Circle Color"))
+                    elif "FOV Smooth Circle Color" in widget.cget("text"):
+                        widget.configure(text="FOV Smooth Circle Color")
+            
+            # Update labels in the triggerbot scrollable frame
+            for widget in self.tb_scrollable_frame.winfo_children():
+                if isinstance(widget, ctk.CTkLabel):
+                    if "Triggerbot Button" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('triggerbot', 'tb_button', "Triggerbot Button"))
+                    elif "TB FOV Circle Color" in widget.cget("text"):
+                        widget.configure(text="TB FOV Circle Color")
+            
+            # Update Config tab
+            for widget in self.tab_config.winfo_children():
+                if isinstance(widget, ctk.CTkLabel):
+                    if "Choose" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('config', 'choose_config', "Choose a config"))
+                elif isinstance(widget, ctk.CTkButton):
+                    if "Save" in widget.cget("text") and "New" not in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('config', 'save', "Save"))
+                    elif "New Config" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('config', 'new_config', "New Config"))
+                    elif "Load" in widget.cget("text"):
+                        widget.configure(text=self.lang_manager.get_text('config', 'load_config', "Load config"))
+            
+            logger.info("UI language update completed")
+        except Exception as e:
+            logger.error(f"Error updating UI language: {e}", exc_info=True)
+        
+    def _test_move(self):
+        try:
+            self.tracker.controller.move(100, 100)
+            time.sleep(0.1)
+            self.tracker.controller.move(-100, -100)
+            self._log_config("Move test executed")
+        except Exception as e:
+            self._log_config(f"Move test error: {e}")
+            
+    def _test_click(self):
+        try:
+            self.tracker.controller.click()
+            self._log_config("Click test executed")
+        except Exception as e:
+            self._log_config(f"Click test error: {e}")
 
     def _on_enableaim_changed(self):
         config.enableaim = self.var_enableaim.get()
@@ -793,10 +1397,27 @@ class ViewerApp(ctk.CTk):
     def _on_color_selected(self, val):
         config.color = val
         self.tracker.color = val
+        logger.debug(f"Color changed to {val}")
 
     def _on_mode_selected(self, val):
         config.mode = val
         self.tracker.mode = val
+        logger.debug(f"Mode changed to {val}")
+        
+    def _on_fov_color_selected(self, val):
+        config.fov_color = val
+        self.tracker.fov_color = val
+        logger.debug(f"FOV color changed to {val}")
+        
+    def _on_fov_smooth_color_selected(self, val):
+        config.fov_smooth_color = val
+        self.tracker.fov_smooth_color = val
+        logger.debug(f"FOV smooth color changed to {val}")
+        
+    def _on_tb_fov_color_selected(self, val):
+        config.tb_fov_color = val
+        self.tracker.tb_fov_color = val
+        logger.debug(f"TB FOV color changed to {val}")
 
     # ----------------------- NDI helpers -----------------------
     def _process_source_updates(self):
@@ -842,12 +1463,43 @@ class ViewerApp(ctk.CTk):
 
     def _update_connection_status_loop(self):
         try:
+            # NDI connection status
             is_conn = self.receiver.is_connected()
             self.connected = is_conn
             if is_conn:
-                self.status_label.configure(text=f"Connected to {self.selected_source}", text_color="green")
+                self.status_label.configure(
+                    text=f"{self.lang_manager.get_text('general', 'status', 'Status')}: {self.lang_manager.get_text('general', 'connected', 'Connected')} - {self.selected_source}", 
+                    text_color="green"
+                )
             else:
-                self.status_label.configure(text="Disconnected", text_color="red")
+                self.status_label.configure(
+                    text=f"{self.lang_manager.get_text('general', 'status', 'Status')}: {self.lang_manager.get_text('general', 'disconnected', 'Disconnected')}", 
+                    text_color="red"
+                )
+            
+            # MAKCU connection status - this is a placeholder, replace with actual MAKCU connection check
+            try:
+                # Check if @makcu-py-lib is connected
+                # For now, we'll just use a placeholder check - replace with actual implementation
+                import importlib.util
+                makcu_connected = False
+                try:
+                    # Try to import makcu if available
+                    if importlib.util.find_spec("makcu") is not None:
+                        makcu = importlib.import_module("makcu")
+                        if hasattr(makcu, "is_connected") and callable(makcu.is_connected):
+                            makcu_connected = makcu.is_connected()
+                    
+                    # If not available, check if mouse controller is working as a fallback
+                    if not makcu_connected and hasattr(self.tracker, "controller") and self.tracker.controller:
+                        makcu_connected = True
+                except:
+                    pass
+                
+                self.makcu_status_indicator.configure(text="●", text_color="green" if makcu_connected else "red")
+            except Exception:
+                self.makcu_status_indicator.configure(text="●", text_color="red")
+                
         except Exception:
             pass
         self.after(500, self._update_connection_status_loop)
