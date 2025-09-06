@@ -98,11 +98,29 @@ class LanguageManager:
 
 def threaded_silent_move(controller, dx, dy):
     """Petit move-restore pour le mode Silent."""
+    # 確保控制器已初始化
+    if controller is None:
+        from mouse import Mouse
+        controller = Mouse()
+    
+    # 記錄操作
+    logger.debug(f"Silent move: Moving by dx={dx}, dy={dy}")
+    
+    # 執行移動
     controller.move(dx, dy)
     time.sleep(0.001)
+    
+    # 執行點擊
+    logger.debug("Silent move: Clicking")
     controller.click()
     time.sleep(0.001)
+    
+    # 恢復位置
+    logger.debug(f"Silent move: Restoring position by dx={-dx}, dy={-dy}")
     controller.move(-dx, -dy)
+    
+    # 完成操作
+    logger.debug("Silent move completed")
 
 
 class AimTracker:
@@ -133,7 +151,7 @@ class AimTracker:
         self.tbdelay = float(getattr(config, "tbdelay", 0.08))
         self.tbcooldown = float(getattr(config, "tbcooldown", 0.5))
         self.last_tb_click_time = 0.0
-        
+
         # FOV colors
         self.fov_color = getattr(config, "fov_color", "white")
         self.fov_smooth_color = getattr(config, "fov_smooth_color", "cyan")
@@ -177,14 +195,36 @@ class AimTracker:
                     # Log the movement for debugging
                     logger.debug(f"Processing move: dx={dx}, dy={dy}")
                     
+                    # 確保移動值有效
+                    if dx == 0 and dy == 0:
+                        logger.debug("Skipping zero movement")
+                        continue
+                    
                     # Ensure controller is initialized
                     if not hasattr(self, "controller") or self.controller is None:
                         logger.error("Mouse controller is not initialized!")
                         self.controller = Mouse()
-                        
-                    # Call move method
+                    
+                    # 檢查MAKCU連接狀態
+                    from mouse import is_connected
+                    if not is_connected:
+                        logger.error("MAKCU is not connected, attempting to reconnect...")
+                        from mouse import connect_to_makcu
+                        if connect_to_makcu():
+                            logger.info("MAKCU reconnected successfully")
+                        else:
+                            logger.error("Failed to reconnect to MAKCU")
+                            continue
+                    
+                    # 直接使用原始值，讓mouse.py處理轉換
+                    # 這樣可以確保與mouse.py的兼容性
+                    logger.debug(f"Sending movement to mouse.py: dx={dx}, dy={dy}")
+                    
+                    # 直接調用move方法，不進行任何轉換
                     self.controller.move(dx, dy)
-                    logger.debug("Move command sent to mouse controller")
+                    
+                    # 記錄已發送命令
+                    logger.info(f"Mouse move command sent: dx={dx}, dy={dy}")
                 except Exception as e:
                     logger.error(f"[Mouse.move error] {e}", exc_info=True)
                 
@@ -437,9 +477,23 @@ class AimTracker:
                 main_btn_idx = button_index_map.get(main_btn, 0)  # 默認使用左鍵索引
                 sec_btn_idx = button_index_map.get(sec_btn, 1)    # 默認使用中鍵索引
                 
+                # 確保次要按鍵不與主要按鍵相同
+                if sec_btn_idx == main_btn_idx:
+                    # 如果設置相同，強制使用不同的按鍵
+                    available_indices = [idx for idx in [0, 1, 2, 3, 4] if idx != main_btn_idx]
+                    if available_indices:
+                        sec_btn_idx = available_indices[0]
+                        logger.warning(f"Secondary button index was same as main button index. Changed to {sec_btn_idx}")
+                
                 # Check which button is pressed and use appropriate speeds
                 main_button_pressed = is_button_pressed(main_btn_idx)
                 sec_button_pressed = is_button_pressed(sec_btn_idx)
+                
+                # 確保不會同時觸發兩個按鍵
+                if main_button_pressed and sec_button_pressed:
+                    # 如果兩個按鍵都被按下，優先使用主按鍵
+                    logger.debug("Both buttons pressed, prioritizing main button")
+                    sec_button_pressed = False
                 
                 # 記錄實際使用的按鍵索引，方便調試
                 logger.debug(f"Button indices: main_btn_idx={main_btn_idx}, sec_btn_idx={sec_btn_idx}")
@@ -448,38 +502,99 @@ class AimTracker:
                 logger.debug(f"Button config: main_btn={main_btn}, sec_btn={sec_btn}")
                 logger.debug(f"Button states: main_pressed={main_button_pressed}, sec_pressed={sec_button_pressed}")
                 
-                if aim_enabled and (main_button_pressed or sec_button_pressed):
-                    # Get the appropriate speeds based on which button is pressed
-                    if main_button_pressed:
-                        x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
-                        y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
-                        logger.debug(f"Using main button speeds: {x_speed}/{y_speed}")
-                    elif sec_button_pressed:  # Explicitly check for secondary button
-                        x_speed = float(getattr(config, "sec_x_speed", self.sec_x_speed))
-                        y_speed = float(getattr(config, "sec_y_speed", self.sec_y_speed))
-                        logger.debug(f"Using secondary button speeds: {x_speed}/{y_speed}")
-                    else:
-                        # Fallback (shouldn't happen but just in case)
-                        x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
-                        y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
-                        logger.debug(f"Fallback to main button speeds: {x_speed}/{y_speed}")
+                # 檢查是否啟用自瞄
+                logger.debug(f"Aim enabled: {aim_enabled}")
+                
+                # 直接檢查所有可能的按鍵狀態
+                direct_checks = {
+                    0: is_button_pressed(0),  # 左鍵
+                    1: is_button_pressed(1),  # 中鍵
+                    2: is_button_pressed(2),  # 上側鍵
+                    3: is_button_pressed(3),  # 下側鍵
+                    4: is_button_pressed(4)   # 右鍵
+                }
+                logger.debug(f"Direct button checks: {direct_checks}")
+                
+                # 檢查MAKCU連接狀態
+                from mouse import is_connected
+                logger.debug(f"MAKCU connection status: {is_connected}")
+                
+                # 使用已經確定的按鍵索引和狀態
+                main_btn_idx_actual = main_btn_idx
+                sec_btn_idx_actual = sec_btn_idx
+                
+                # 使用已經確定的按鍵狀態
+                main_button_pressed_actual = main_button_pressed
+                sec_button_pressed_actual = sec_button_pressed
+                
+                # 記錄當前使用的按鍵設置
+                logger.debug(f"Using button settings: main_btn={main_btn} (idx={main_btn_idx_actual}), sec_btn={sec_btn} (idx={sec_btn_idx_actual})")
+                
+                logger.debug(f"Rechecked button states: main(idx={main_btn_idx_actual})={main_button_pressed_actual}, sec(idx={sec_btn_idx_actual})={sec_button_pressed_actual}")
+                
+                # 如果條件不滿足，跳過移動處理
+                if not aim_enabled or not (main_button_pressed_actual or sec_button_pressed_actual):
+                    logger.debug(f"Aimbot condition not met: aim_enabled={aim_enabled}, main_pressed={main_button_pressed_actual}, sec_pressed={sec_button_pressed_actual}")
+                    return
+                
+                # 條件滿足，準備移動
+                logger.debug("Aimbot condition met, preparing to move")
+                
+                # 獲取按鍵速度設置
+                main_x_speed = float(getattr(config, "main_x_speed", self.main_x_speed))
+                main_y_speed = float(getattr(config, "main_y_speed", self.main_y_speed))
+                sec_x_speed = float(getattr(config, "sec_x_speed", self.sec_x_speed))
+                sec_y_speed = float(getattr(config, "sec_y_speed", self.sec_y_speed))
+                
+                # 記錄所有速度設置
+                logger.debug(f"Speed settings: main=({main_x_speed}/{main_y_speed}), sec=({sec_x_speed}/{sec_y_speed})")
+                
+                # Get the appropriate speeds based on which button is pressed
+                if main_button_pressed_actual:
+                    x_speed = main_x_speed
+                    y_speed = main_y_speed
+                    logger.debug(f"Using main button speeds: {x_speed}/{y_speed}")
+                elif sec_button_pressed_actual:  # Explicitly check for secondary button
+                    x_speed = sec_x_speed
+                    y_speed = sec_y_speed
+                    logger.debug(f"Using secondary button speeds: {x_speed}/{y_speed}")
+                else:
+                    # Fallback (shouldn't happen but just in case)
+                    x_speed = main_x_speed
+                    y_speed = main_y_speed
+                    logger.debug(f"Fallback to main button speeds: {x_speed}/{y_speed}")
+                
+                # Apply smoothing if within smoothing FOV
+                if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
+                    ndx *= x_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
+                    ndy *= y_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
+                else:
+                    ndx *= x_speed
+                    ndy *= y_speed
+                
+                # Debug movement values
+                logger.debug(f"Movement values: dx={ndx}, dy={ndy}")
+                
+                # Clip movement to avoid extreme values
+                ddx, ddy = self._clip_movement(ndx, ndy)
+                logger.debug(f"Clipped movement: ddx={ddx}, ddy={ddy}")
+                
+                # 直接移動滑鼠，不進行額外的轉換
+                # 這樣可以確保與mouse.py的兼容性
+                logger.debug(f"Final movement values: ddx={ddx}, ddy={ddy}")
+                
+                # 直接調用move方法，不使用隊列
+                try:
+                    # 確保控制器已初始化
+                    if not hasattr(self, "controller") or self.controller is None:
+                        self.controller = Mouse()
                     
-                    # Apply smoothing if within smoothing FOV
-                    if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
-                        ndx *= x_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
-                        ndy *= y_speed / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
-                    else:
-                        ndx *= x_speed
-                        ndy *= y_speed
-                    
-                    # Debug movement values
-                    logger.debug(f"Movement values: dx={ndx}, dy={ndy}")
-                    
-                    ddx, ddy = self._clip_movement(ndx, ndy)
-                    logger.debug(f"Clipped movement: ddx={ddx}, ddy={ddy}")
-                    
-                    # Actually move the mouse
-                    self.move_queue.put((ddx, ddy, 0.005))
+                    # 直接調用move方法
+                    logger.debug(f"Calling controller.move({ddx}, {ddy})")
+                    self.controller.move(ddx, ddy)
+                    logger.info(f"Mouse moved: dx={ddx}, dy={ddy}")
+                except Exception as e:
+                    logger.error(f"Error moving mouse: {e}", exc_info=True)
             except Exception as e:
                 logger.error(f"Error in aim movement: {e}", exc_info=True)
 
@@ -507,41 +622,107 @@ class AimTracker:
                 tb_2_pressed = tb_btn_2_idx is not None and is_button_pressed(tb_btn_2_idx)
                 
                 if getattr(config, "enabletb", False) and (tb_pressed or tb_2_pressed):
+                    # 檢查冷卻時間
+                    now = time.time()
+                    if now < self.last_tb_click_time:
+                        # 還在冷卻中，跳過
+                        return
+                        
+                    # 獲取屏幕中心點
                     cx0, cy0 = int(frame.xres // 2), int(frame.yres // 2)
                     r = int(getattr(config, "tbfovsize", self.tbfovsize))
                     x1, y1 = max(cx0 - r, 0), max(cy0 - r, 0)
                     x2, y2 = min(cx0 + r, frame.xres), min(cy0 + r, frame.yres)
-                    roi = img[y1:y2, x1:x2]
-
-                    debug_roi = roi.copy()
-                    detections = perform_detection(self.model, debug_roi)
+                    
+                    # 提取ROI區域
+                    try:
+                        roi = img[y1:y2, x1:x2]
+                        debug_roi = roi.copy()
+                    except Exception as e:
+                        logger.error(f"Error extracting ROI: {e}")
+                        return
+                    
+                    # 執行目標檢測
+                    try:
+                        detections = perform_detection(self.model, debug_roi)
+                        logger.debug(f"TriggerBot detections: {len(detections)}")
+                    except Exception as e:
+                        logger.error(f"Error in detection: {e}")
+                        detections = []
+                    
+                    # 在調試ROI上繪製檢測結果
                     if detections:
                         for det in detections:
-                            x, y, w, h = det["bbox"]
-                            cv2.rectangle(debug_roi, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                            try:
+                                x, y, w, h = det["bbox"]
+                                cv2.rectangle(debug_roi, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                            except Exception as e:
+                                logger.error(f"Error drawing detection: {e}")
+                    
+                    # 顯示調試ROI
                     try:
                         cv2.imshow("Triggerbot ROI", debug_roi)
                         cv2.waitKey(1)
                     except Exception:
                         pass
 
-                    if detections or distance_to_center < float(getattr(config, "tbfovsize", self.tbfovsize)):
-                        now = time.time()
+                    # 檢查是否有檢測結果或目標在視野內
+                    target_in_fov = detections or distance_to_center < float(getattr(config, "tbfovsize", self.tbfovsize))
+                    
+                    if target_in_fov:
+                        # 獲取延遲和冷卻設置
                         tb_delay = float(getattr(config, "tbdelay", self.tbdelay))
                         tb_cooldown = float(getattr(config, "tbcooldown", self.tbcooldown))
                         
-                        if now - self.last_tb_click_time >= tb_delay:
-                            self.controller.click()
-                            self.last_tb_click_time = now + tb_cooldown
+                        # 確保控制器已初始化
+                        if not hasattr(self, "controller") or self.controller is None:
+                            from mouse import Mouse
+                            self.controller = Mouse()
+                        
+                        # 等待延遲時間
+                        if tb_delay > 0:
+                            time.sleep(tb_delay)
+                        
+                        # 直接調用click方法 - 使用與makcu-py-lib相同的方式
+                        logger.debug("Executing TriggerBot click")
+                        try:
+                            # 使用與mouse.py中相同的調用方式
+                            from mouse import makcu_lock, makcu
+                            with makcu_lock:
+                                makcu.write(b"km.left(1)\r km.left(0)\r")
+                                makcu.flush()
+                            logger.info("TriggerBot clicked successfully")
+                        except Exception as e:
+                            # 如果直接調用失敗，嘗試使用controller.click()
+                            logger.warning(f"Direct click failed, trying controller.click(): {e}")
+                            try:
+                                self.controller.click()
+                                logger.info("TriggerBot clicked via controller")
+                            except Exception as e2:
+                                logger.error(f"Controller click also failed: {e2}")
+                        
+                        # 設置下一次可以點擊的時間
+                        self.last_tb_click_time = now + tb_cooldown
             except Exception as e:
                 print("[Triggerbot error]", e)
 
         elif mode == "Silent":
-            dx_raw = int(dx)
-            dy_raw = int(dy)
-            dx_raw *= self.normal_x_speed
-            dy_raw *= self.normal_y_speed
-            threading.Thread(target=threaded_silent_move, args=(self.controller, dx_raw, dy_raw), daemon=True).start()
+            # Silent模式直接使用原始值，不進行轉換
+            dx_raw = dx * self.normal_x_speed
+            dy_raw = dy * self.normal_y_speed
+            
+            # 記錄移動值
+            logger.debug(f"Silent mode movement: dx={dx_raw}, dy={dy_raw}")
+            
+            # 啟動線程執行移動
+            threading.Thread(
+                target=threaded_silent_move, 
+                args=(self.controller, dx_raw, dy_raw), 
+                daemon=True
+            ).start()
+            
+            # 記錄已發送命令
+            logger.info(f"Silent move command sent: dx={dx_raw}, dy={dy_raw}")
 
 
 class ViewerApp(ctk.CTk):
@@ -556,7 +737,7 @@ class ViewerApp(ctk.CTk):
         if hasattr(config, "language") and config.language in self.lang_manager.languages:
             self.lang_manager.set_language(config.language)
             logger.info(f"Initialized language to {config.language}")
-        
+
         # Dicos pour MAJ UI <-> config
         self._slider_widgets = {}   # key -> {"slider": widget, "label": widget, "min":..., "max":..., "entry": widget}
         self._checkbox_vars = {}    # key -> tk.BooleanVar
@@ -1024,16 +1205,30 @@ class ViewerApp(ctk.CTk):
             values=list(BUTTONS.values()),
             command=self._on_sec_aimbot_button_selected
         )
+        
+        # 設置初始值
+        sec_btn = getattr(config, "selected_sec_mouse_button", 2)
+        for key, name in BUTTONS.items():
+            if key == sec_btn:
+                self.sec_aimbot_button_option.set(name)
+                break
+                
         self.sec_aimbot_button_option.pack(pady=5, fill="x")
         self._option_widgets["sec_aimbot_button"] = self.sec_aimbot_button_option
         
-        # Secondary X Speed
-        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_x_speed', "Secondary X Speed"), 0.1, 2000, float(getattr(config, "sec_x_speed", 0.5)), self._on_sec_x_speed_changed, is_float=True)
+        # 記錄當前設置
+        logger.info(f"Secondary aimbot button initialized to: {sec_btn} ({self.sec_aimbot_button_option.get()})")
+        
+        # Secondary X Speed - 使用更高的默認值，確保效果明顯
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_x_speed', "Secondary X Speed"), 0.1, 2000, float(getattr(config, "sec_x_speed", 1.5)), self._on_sec_x_speed_changed, is_float=True)
         self._register_slider("sec_x_speed", s, l, 0.1, 2000, True, e)
         
-        # Secondary Y Speed
-        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_y_speed', "Secondary Y Speed"), 0.1, 2000, float(getattr(config, "sec_y_speed", 0.5)), self._on_sec_y_speed_changed, is_float=True)
+        # Secondary Y Speed - 使用更高的默認值，確保效果明顯
+        s, l, e = self._add_slider_with_label(self.aimbot_scrollable_frame, self.lang_manager.get_text('aimbot', 'sec_y_speed', "Secondary Y Speed"), 0.1, 2000, float(getattr(config, "sec_y_speed", 1.5)), self._on_sec_y_speed_changed, is_float=True)
         self._register_slider("sec_y_speed", s, l, 0.1, 2000, True, e)
+        
+        # 記錄當前設置的速度值
+        logger.info(f"Secondary aimbot speeds initialized to: X={getattr(config, 'sec_x_speed', 1.5)}, Y={getattr(config, 'sec_y_speed', 1.5)}")
 
 
     def _build_tb_tab(self):
@@ -1097,7 +1292,7 @@ class ViewerApp(ctk.CTk):
         # Bottom row with slider
         slider_frame = ctk.CTkFrame(outer_frame)
         slider_frame.pack(fill="x", pady=(5, 0))
-        
+
         steps = 100 if is_float else max(1, int(max_val - min_val))
         slider = ctk.CTkSlider(slider_frame, from_=min_val, to=max_val, number_of_steps=steps,
                               command=lambda v: self._slider_callback(v, label, text, command, is_float, entry_var))
@@ -1210,18 +1405,62 @@ class ViewerApp(ctk.CTk):
         self._log_config(f"Aimbot button set to {val} ({key})")
 
     def _on_tb_button_selected(self, val):
+        # 查找按鍵編號
+        selected_key = None
         for key, name in BUTTONS.items():
             if name == val:
-                config.selected_tb_btn = key
+                selected_key = key
                 break
-        self._log_config(f"Triggerbot button set to {val} ({key})")
-    
+        
+        if selected_key is None:
+            logger.error(f"Invalid button name: {val}")
+            return
+        
+        # 設置TriggerBot按鍵
+        config.selected_tb_btn = selected_key
+        
+        # 更新AimTracker
+        if hasattr(self, 'tracker'):
+            self.tracker.selected_tb_btn = selected_key
+        
+        # 記錄設置
+        self._log_config(f"Triggerbot button set to {val} ({selected_key})")
+        logger.info(f"Triggerbot button updated: {selected_key} ({val})")
+
     def _on_sec_aimbot_button_selected(self, val):
+        # 查找按鍵編號
+        selected_key = None
         for key, name in BUTTONS.items():
             if name == val:
-                config.selected_sec_mouse_button = key
+                selected_key = key
                 break
-        self._log_config(f"Secondary aimbot button set to {val} ({key})")
+        
+        if selected_key is None:
+            logger.error(f"Invalid button name: {val}")
+            return
+            
+        # 確保次要按鍵與主要按鍵不同
+        main_btn = getattr(config, "selected_mouse_button", 1)
+        if selected_key == main_btn:
+            self._log_config(f"Warning: Secondary button cannot be the same as main button")
+            # 選擇一個不同的按鍵
+            for key in BUTTONS.keys():
+                if key != main_btn:
+                    selected_key = key
+                    # 更新UI
+                    self.sec_aimbot_button_option.set(BUTTONS[key])
+                    break
+        
+        # 設置次要按鍵
+        config.selected_sec_mouse_button = selected_key
+        
+        # 更新AimTracker
+        if hasattr(self, 'tracker'):
+            self.tracker.selected_sec_mouse_button = selected_key
+            
+        # 記錄設置
+        self._log_config(f"Secondary aimbot button set to {val} ({selected_key})")
+        logger.info(f"Secondary aimbot button updated: {selected_key} ({val})")
 
     def _on_fovsize_changed(self, val):
         config.fovsize = val
@@ -1640,7 +1879,17 @@ class ViewerApp(ctk.CTk):
         config.enableaim = self.var_enableaim.get()
 
     def _on_enabletb_changed(self):
-        config.enabletb = self.var_enabletb.get()
+        enabled = self.var_enabletb.get()
+        config.enabletb = enabled
+        
+        # 更新AimTracker
+        if hasattr(self, 'tracker'):
+            self.tracker.enabletb = enabled
+        
+        # 記錄設置
+        status = "enabled" if enabled else "disabled"
+        self._log_config(f"TriggerBot {status}")
+        logger.info(f"TriggerBot {status}")
 
     def _on_source_selected(self, val):
         self.selected_source = val
