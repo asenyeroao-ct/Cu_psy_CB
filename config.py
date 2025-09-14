@@ -4,7 +4,6 @@ class Config:
         # --- General Settings ---
 
         self.enableaim = True
-        self.always_aim = False
         self.enabletb = False
         self.offsetX = -2
         self.offsetY = 3
@@ -30,6 +29,12 @@ class Config:
 
         self.normalsmooth = 30
         self.normalsmoothfov = 30
+        
+        # --- Y Offset for aiming ---
+        self.y_offset = 0
+        
+        # --- Target FPS ---
+        self.target_fps = 80
     
 
 config = Config()
