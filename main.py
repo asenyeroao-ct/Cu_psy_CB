@@ -20,10 +20,10 @@ from config import config
 from mouse import Mouse, is_button_pressed
 from detection import load_model, perform_detection
 
-# 設置日誌
+# Setup logging
 os.makedirs("data", exist_ok=True)
 logging.basicConfig(
-    level=logging.DEBUG,  # 提升日誌等級以獲取更詳細資訊
+    level=logging.DEBUG,  # Increase log level for more detailed information
     format='%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s() - %(message)s',
     handlers=[
         logging.FileHandler('data/bot.log', encoding='utf-8'),
@@ -42,7 +42,7 @@ BUTTONS = {
 }
 
 def threaded_silent_move(controller, dx, dy):
-    """Petit move-restore pour le mode Silent."""
+    """Small move-restore for Silent mode."""
     controller.move(dx, dy)
     time.sleep(0.001)
     controller.click()
@@ -53,7 +53,7 @@ def threaded_silent_move(controller, dx, dy):
 class AimTracker:
     def __init__(self, app, target_fps=80):
         self.app = app
-        # --- Params (avec valeurs fallback) ---
+        # --- Params (with fallback values) ---
         self.normal_x_speed = float(getattr(config, "normal_x_speed", 0.5))
         self.normal_y_speed = float(getattr(config, "normal_y_speed", 0.5))
         self.normalsmooth = float(getattr(config, "normalsmooth", 10))
@@ -67,31 +67,35 @@ class AimTracker:
         self.in_game_sens = float(getattr(config, "in_game_sens", 7))
         self.color = getattr(config, "color", "yellow")
         self.mode = getattr(config, "mode", "V1aim")
+        self.always_aim = getattr(config, "always_aim", False)
         self.selected_mouse_button = getattr(config, "selected_mouse_button", 3),
         self.selected_tb_btn= getattr(config, "selected_tb_btn", 3)
         self.max_speed = float(getattr(config, "max_speed", 1000.0))
         
-        # Flick相關參數
+        # Flick related parameters
         self.flick_strength = float(getattr(config, "flick_strength", 1.0))
         self.enableflick = getattr(config, "enableflick", False)
         self.enablebezier = getattr(config, "enablebezier", False)
         self.enableflicktb = getattr(config, "enableflicktb", False)
         self.last_flick_time = 0.0
-        self.flick_cooldown = float(getattr(config, "flick_cooldown", 0.1))  # 可調整的冷卻時間
+        self.flick_cooldown = float(getattr(config, "flick_cooldown", 0.1))  # Adjustable cooldown time
         
-        # Silent相關參數
-        self.silent_cooldown = float(getattr(config, "silent_cooldown", 0.1))  # Silent模式冷卻時間
+        # Silent related parameters
+        self.silent_cooldown = float(getattr(config, "silent_cooldown", 0.1))  # Silent mode cooldown time
         self.last_silent_time = 0.0
-        self.silent_strength = float(getattr(config, "silent_strength", 1.0))  # Silent模式強度
-        self.enablesilent = getattr(config, "enablesilent", False)  # 啟用Silent模式
-        self.enablesilentbezier = getattr(config, "enablesilentbezier", False)  # Silent模式貝賽爾曲線
-        self.enablesilenttb = getattr(config, "enablesilenttb", False)  # Silent模式自動開槍
-        self.enableultrafast = getattr(config, "enableultrafast", True)  # 啟用超高速模式
-        self.enableextremefast = getattr(config, "enableextremefast", False)  # 啟用極限速度模式
+        self.silent_strength = float(getattr(config, "silent_strength", 1.0))  # Silent mode strength
+        self.enablesilent = getattr(config, "enablesilent", False)  # Enable Silent mode
+        self.enablesilentbezier = getattr(config, "enablesilentbezier", False)  # Silent mode bezier curve
+        self.enablesilenttb = getattr(config, "enablesilenttb", False)  # Silent mode auto shoot
+        self.enableultrafast = getattr(config, "enableultrafast", True)  # Enable ultra fast mode
+        self.enableextremefast = getattr(config, "enableextremefast", False)  # Enable extreme fast mode
         
-        # Silent模式相關變量
-        self.original_mouse_pos = None  # 記錄原始鼠標位置
-        self.silent_move_in_progress = False  # 標記是否正在執行silent移動
+        # Y offset for aiming adjustment
+        self.y_offset = float(getattr(config, "y_offset", 0))
+        
+        # Silent mode related variables
+        self.original_mouse_pos = None  # Record original mouse position
+        self.silent_move_in_progress = False  # Mark if silent movement is in progress
 
         self.controller = Mouse()
         self.move_queue = queue.Queue(maxsize=50)
@@ -136,12 +140,12 @@ class AimTracker:
         return float(clipped_dx), float(clipped_dy)
 
     def _bezier_curve(self, start_x, start_y, end_x, end_y, steps=10):
-        """生成貝賽爾曲線路徑點"""
-        # 計算控制點，創建一個自然的曲線
+        """Generate bezier curve path points"""
+        # Calculate control points to create a natural curve
         mid_x = (start_x + end_x) / 2
         mid_y = (start_y + end_y) / 2
         
-        # 添加一些隨機性使曲線更自然
+        # Add some randomness to make the curve more natural
         import random
         offset_x = random.uniform(-20, 20)
         offset_y = random.uniform(-20, 20)
@@ -152,7 +156,7 @@ class AimTracker:
         points = []
         for i in range(steps + 1):
             t = i / steps
-            # 二次貝賽爾曲線公式
+            # Quadratic bezier curve formula
             x = (1-t)**2 * start_x + 2*(1-t)*t * control_x + t**2 * end_x
             y = (1-t)**2 * start_y + 2*(1-t)*t * control_y + t**2 * end_y
             points.append((x, y))
@@ -160,23 +164,23 @@ class AimTracker:
         return points
 
     def _flick_to_target(self, target_x, target_y, center_x, center_y):
-        """執行flick移動到目標"""
+        """Execute flick movement to target"""
         now = time.time()
         if now - self.last_flick_time < self.flick_cooldown:
-            return False  # 冷卻中
+            return False  # In cooldown
         
         self.last_flick_time = now
         
-        # 計算移動距離
+        # Calculate movement distance
         dx = target_x - center_x
         dy = target_y - center_y
         
-        # 應用flick強度
+        # Apply flick strength
         dx *= self.flick_strength
         dy *= self.flick_strength
         
         if getattr(config, "enablebezier", False):
-            # 使用貝賽爾曲線
+            # Use bezier curve
             points = self._bezier_curve(0, 0, dx, dy, steps=5)
             for i, (px, py) in enumerate(points):
                 if i > 0:
@@ -186,7 +190,7 @@ class AimTracker:
                     ddx, ddy = self._clip_movement(move_x, move_y)
                     self.move_queue.put((ddx, ddy, 0.001))
         else:
-            # 直接移動
+            # Direct movement
             ddx, ddy = self._clip_movement(dx, dy)
             self.move_queue.put((ddx, ddy, 0.001))
         
@@ -194,14 +198,14 @@ class AimTracker:
         return True
 
     def _silent_flick_to_target(self, target_x, target_y, center_x, center_y):
-        """執行silent flick移動到目標並返回原位置"""
+        """Execute silent flick movement to target and return to original position"""
         now = time.time()
         if now - self.last_silent_time < self.silent_cooldown:
-            return False  # 冷卻中
+            return False  # In cooldown
         
         self.last_silent_time = now
         
-        # 記錄當前鼠標位置
+        # Record current mouse position
         try:
             import win32gui
             self.original_mouse_pos = win32gui.GetCursorPos()
@@ -210,20 +214,20 @@ class AimTracker:
             logger.error(f"Failed to get mouse position: {e}")
             self.original_mouse_pos = (0, 0)
         
-        # 計算移動距離
+        # Calculate movement distance
         dx = target_x - center_x
         dy = target_y - center_y
         
-        # 計算到目標的距離
+        # Calculate distance to target
         distance_to_target = math.hypot(dx, dy)
         logger.debug(f"Silent mode: Distance to target: {distance_to_target:.1f} pixels")
         
-        # 應用silent強度
+        # Apply silent strength
         dx *= self.silent_strength
         dy *= self.silent_strength
         
         if getattr(config, "enablesilentbezier", False):
-            # 使用貝賽爾曲線（減少步數以提高速度）
+            # Use bezier curve (reduce steps to improve speed)
             points = self._bezier_curve(0, 0, dx, dy, steps=3)
             for i, (px, py) in enumerate(points):
                 if i > 0:
@@ -231,93 +235,93 @@ class AimTracker:
                     move_x = px - prev_x
                     move_y = py - prev_y
                     ddx, ddy = self._clip_movement(move_x, move_y)
-                    self.move_queue.put((ddx, ddy, 0.0001))  # 減少延遲
+                    self.move_queue.put((ddx, ddy, 0.0001))  # Reduce delay
         else:
-            # 直接移動（無延遲）
+            # Direct movement (no delay)
             ddx, ddy = self._clip_movement(dx, dy)
-            self.move_queue.put((ddx, ddy, 0.0001))  # 減少延遲
+            self.move_queue.put((ddx, ddy, 0.0001))  # Reduce delay
         
-        # 射擊（根據設置決定是否自動開槍）
+        # Shoot (auto shoot based on settings)
         if getattr(config, "enablesilenttb", False):
-            # 移除延遲，直接射擊
+            # Remove delay, shoot directly
             self.controller.click()
         
-        # 返回原位置（無延遲）
+        # Return to original position (no delay)
         self.controller.move(-dx, -dy)
         
         logger.debug(f"Silent flick executed: target=({target_x:.1f}, {target_y:.1f}), move=({dx:.1f}, {dy:.1f}), returned to original position")
         return True
 
     def _ultra_fast_silent_flick(self, target_x, target_y, center_x, center_y):
-        """極速Silent模式 - 無延遲"""
+        """Ultra fast Silent mode - no delay"""
         now = time.time()
         if now - self.last_silent_time < self.silent_cooldown:
-            return False  # 冷卻中
+            return False  # In cooldown
         
         self.last_silent_time = now
         
-        # 計算移動距離並應用強度（合併計算）
+        # Calculate movement distance and apply strength (combined calculation)
         dx = (target_x - center_x) * self.silent_strength
         dy = (target_y - center_y) * self.silent_strength
         
-        # 使用最直接的移動方式 - 無延遲，無日誌記錄
+        # Use the most direct movement method - no delay, no logging
         ddx, ddy = self._clip_movement(dx, dy)
         
-        # 瞬間移動到目標
+        # Instantly move to target
         self.controller.move(ddx, ddy)
         
-        # 射擊（根據設置決定是否自動開槍）
+        # Shoot (auto shoot based on settings)
         if getattr(config, "enablesilenttb", False):
             self.controller.click()
         
-        # 瞬間返回原位置
+        # Instantly return to original position
         self.controller.move(-ddx, -ddy)
         
         return True
 
     def _extreme_fast_silent_flick(self, target_x, target_y, center_x, center_y):
-        """極限速度Silent模式 - 最快速度"""
+        """Extreme speed Silent mode - fastest speed"""
         now = time.time()
         if now - self.last_silent_time < self.silent_cooldown:
             return False
         
         self.last_silent_time = now
         
-        # 預計算所有值，減少函數調用
+        # Pre-calculate all values to reduce function calls
         dx = int((target_x - center_x) * self.silent_strength)
         dy = int((target_y - center_y) * self.silent_strength)
         
-        # 直接限制範圍，避免函數調用
+        # Directly limit range to avoid function calls
         max_speed = int(self.max_speed)
         dx = max(-max_speed, min(dx, max_speed))
         dy = max(-max_speed, min(dy, max_speed))
         
-        # 瞬間移動到目標
+        # Instantly move to target
         self.controller.move(dx, dy)
         
-        # 射擊（根據設置決定是否自動開槍）
+        # Shoot (auto shoot based on settings)
         if getattr(config, "enablesilenttb", False):
             self.controller.click()
         
-        # 瞬間返回原位置
+        # Instantly return to original position
         self.controller.move(-dx, -dy)
         
         return True
 
     def _silent_move_with_return(self, dx, dy, distance_to_target):
-        """Silent模式移動並返回原位置"""
+        """Silent mode movement and return to original position"""
         try:
             logger.debug(f"Silent move: Moving {dx}, {dy} pixels, distance to target: {distance_to_target:.1f}")
             
-            # 移動到目標
+            # Move to target
             self.controller.move(dx, dy)
             time.sleep(0.001)
             
-            # 射擊
+            # Shoot
             self.controller.click()
             time.sleep(0.001)
             
-            # 返回原位置
+            # Return to original position
             self.controller.move(-dx, -dy)
             
             logger.debug(f"Silent move completed: moved to target and returned to original position")
@@ -325,7 +329,7 @@ class AimTracker:
         except Exception as e:
             logger.error(f"Silent move error: {e}")
         finally:
-            # 重置狀態
+            # Reset state
             self.silent_move_in_progress = False
             self.original_mouse_pos = None
 
@@ -389,19 +393,19 @@ class AimTracker:
                     x1, y1 = int(x), int(y)
                     x2, y2 = int(x + w), int(y + h)
                     y1 *= 1.03
-                    # Dessin corps
+                    # Draw body
                     self._draw_body(bgr_img, x1, y1, x2, y2, conf)
-                    # Estimation têtes dans la bbox
+                    # Estimate head positions in bbox
                     head_positions = self._estimate_head_positions(x1, y1, x2, y2, bgr_img)
                     for head_cx, head_cy, bbox in head_positions:
                         self._draw_head_bbox(bgr_img, head_cx, head_cy)
                         d = math.hypot(head_cx - frame.xres / 2.0, head_cy - frame.yres / 2.0)
                         targets.append((head_cx, head_cy, d))
                 except Exception as e:
-                    print("Erreur dans _estimate_head_positions:", e)
+                    print("Error in _estimate_head_positions:", e)
 
 
-        # FOVs une fois par frame
+        # Draw FOVs once per frame
         try:
             self._draw_fovs(bgr_img, frame)
         except Exception:
@@ -428,7 +432,7 @@ class AimTracker:
         width = x2 - x1
         height = y2 - y1
 
-        # Crop léger
+        # Light crop
         top_crop_factor = 0.10
         side_crop_factor = 0.10
 
@@ -462,18 +466,18 @@ class AimTracker:
             print("[perform_detection ROI error]", e)
 
         if not detections:
-            # Sans détection → garder le head position avec offset
+            # No detection → keep head position with offset
             results.append((headx_base, heady_base, (x1_roi, y1_roi, x2_roi, y2_roi)))
         else:
             for det in detections:
                 x, y, w, h = det["bbox"]
                 cv2.rectangle(img, (x1_roi + x, y1_roi + y), (x1_roi + x + w, y1_roi + y + h), (0, 255, 0), 2)
 
-                # Position détection brute
+                # Raw detection position
                 headx_det = x1_roi + x + w / 2
                 heady_det = y1_roi + y + h / 2
 
-                # Application de l’offset aussi sur la détection
+                # Apply offset also on detection
                 headx_det += effective_width * (offsetX / 100)
                 heady_det += effective_height * (offsetY / 100)
 
@@ -488,15 +492,24 @@ class AimTracker:
     def _aim_and_move(self, targets, frame, img):
         
         aim_enabled = getattr(config, "enableaim", False)
+        always_aim = getattr(config, "always_aim", False)
         selected_btn = getattr(config, "selected_mouse_button", None)
+
+        # Helper function to check if aiming should be active
+        def should_aim():
+            if not aim_enabled:
+                return False
+            if always_aim:
+                return True
+            return selected_btn is not None and is_button_pressed(selected_btn)
 
         center_x = frame.xres / 2.0
         center_y = frame.yres / 2.0
-        # --- Si pas de target, on saute l'aimbot mais on continue triggerbot ---
+        # --- If no target, skip aimbot but continue triggerbot ---
         if not targets:
             cx, cy, distance_to_center = center_x, center_y, float("inf")
         else:
-            # Sélectionne la meilleure target
+            # Select the best target
             best_target = min(targets, key=lambda t: t[2])
             cx, cy, _ = best_target
             distance_to_center = math.hypot(cx - center_x, cy - center_y)
@@ -504,7 +517,7 @@ class AimTracker:
                 return
 
         dx = cx - center_x
-        dy = cy - center_y
+        dy = cy - center_y + self.y_offset
 
         sens = float(getattr(config, "in_game_sens", self.in_game_sens))
         dpi = float(getattr(config, "mouse_dpi", self.mouse_dpi))
@@ -525,18 +538,18 @@ class AimTracker:
                 
                 # --- FLICK CHECK ---
                 flick_enabled = getattr(config, "enableflick", False)
-                if flick_enabled and aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
-                    # 檢查是否剛按下瞄準鍵（flick觸發）
+                if flick_enabled and should_aim() and targets:
+                    # Check if aim key was just pressed (flick trigger)
                     if self._flick_to_target(cx, cy, center_x, center_y):
-                        # 如果啟用了flick triggerbot，則自動開槍
+                        # If flick triggerbot is enabled, auto shoot
                         if getattr(config, "enableflicktb", False):
-                            time.sleep(0.01)  # 短暫延遲確保移動完成
+                            time.sleep(0.01)  # Brief delay to ensure movement completion
                             self.controller.click()
                             logger.debug("Flick triggerbot activated")
-                        return  # 執行flick後直接返回，不執行普通aimbot
+                        return  # Return directly after flick execution, skip normal aimbot
                 
                 # --- AIMBOT ---
-                if aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
+                if should_aim() and targets:
                     if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
                        
                         ndx *= float(getattr(config, "normal_x_speed", self.normal_x_speed)) / max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
@@ -550,23 +563,23 @@ class AimTracker:
                 pass
 
             try:
-                # --- Paramètres triggerbot ---
+                # --- Triggerbot parameters ---
                 if getattr(config, "enabletb", False) and is_button_pressed(getattr(config, "selected_tb_btn", None)) or is_button_pressed(getattr(config, "selected_2_tb", None)):
 
-                    # Centre de l'écran
+                    # Screen center
                     cx0, cy0 = int(frame.xres // 2), int(frame.yres // 2)
-                    ROI_SIZE = 5  # petit carré autour du centre
+                    ROI_SIZE = 5  # small square around center
                     x1, y1 = max(cx0 - ROI_SIZE, 0), max(cy0 - ROI_SIZE, 0)
                     x2, y2 = min(cx0 + ROI_SIZE, img.shape[1]), min(cy0 + ROI_SIZE, img.shape[0])
                     roi = img[y1:y2, x1:x2]
 
                     if roi.size == 0:
-                        return  # sécurité
+                        return  # safety check
 
-                    # Conversion HSV (assure-toi que img est BGR)
+                    # HSV conversion (ensure img is BGR)
                     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-                    # Plage HSV pour le violet (ajuste si nécessaire)
+                    # HSV range for purple (adjust if necessary)
                     
                     HSV_UPPER = self.model[1]
                     HSV_LOWER = self.model[0]
@@ -576,12 +589,12 @@ class AimTracker:
                     detected = cv2.countNonZero(mask) > 0
                     #print(f"ROI shape: {roi.shape}, NonZero pixels: {cv2.countNonZero(mask)}")
 
-                    # Debug affichage
+                    # Debug display
                     cv2.imshow("ROI", roi)
                     cv2.imshow("Mask", mask)
                     cv2.waitKey(1)
 
-                    # Texte sur l'image principale
+                    # Text on main image
                     if detected:
                         cv2.putText(img, "PURPLE DETECTED", (10, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
@@ -595,59 +608,59 @@ class AimTracker:
 
 
         elif mode == "V2aim":
-            # V2aim - 優化後的aimbot邏輯
+            # V2aim - optimized aimbot logic
             try:
                 # --- FLICK CHECK ---
                 flick_enabled = getattr(config, "enableflick", False)
-                if flick_enabled and aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
-                    # 檢查是否剛按下瞄準鍵（flick觸發）
+                if flick_enabled and should_aim() and targets:
+                    # Check if aim key was just pressed (flick trigger)
                     if self._flick_to_target(cx, cy, center_x, center_y):
-                        # 如果啟用了flick triggerbot，則自動開槍
+                        # If flick triggerbot is enabled, auto shoot
                         if getattr(config, "enableflicktb", False):
-                            time.sleep(0.01)  # 短暫延遲確保移動完成
+                            time.sleep(0.01)  # Brief delay to ensure movement completion
                             self.controller.click()
                             logger.debug("V2aim Flick triggerbot activated")
-                        return  # 執行flick後直接返回，不執行普通aimbot
+                        return  # Return directly after flick execution, skip normal aimbot
                 
                 # --- AIMBOT V2 ---
-                if aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
-                    # V2aim使用更精確的瞄準算法
+                if should_aim() and targets:
+                    # V2aim uses more precise aiming algorithm
                     if distance_to_center < float(getattr(config, "normalsmoothfov", self.normalsmoothfov)):
-                        # 在smoothing FOV內使用更精確的計算
+                        # Use more precise calculation within smoothing FOV
                         smoothing_factor = max(float(getattr(config, "normalsmooth", self.normalsmooth)), 0.01)
-                        # V2aim使用更平滑的移動曲線
+                        # V2aim uses smoother movement curve
                         ndx *= float(getattr(config, "normal_x_speed", self.normal_x_speed)) / (smoothing_factor * 1.2)
                         ndy *= float(getattr(config, "normal_y_speed", self.normal_y_speed)) / (smoothing_factor * 1.2)
                     else:
-                        # 在FOV外使用標準速度但稍微降低
+                        # Use standard speed outside FOV but slightly reduced
                         ndx *= float(getattr(config, "normal_x_speed", self.normal_x_speed)) * 0.9
                         ndy *= float(getattr(config, "normal_y_speed", self.normal_y_speed)) * 0.9
                     
-                    # V2aim使用更精確的移動限制
+                    # V2aim uses more precise movement limits
                     ddx, ddy = self._clip_movement(ndx, ndy)
-                    # 添加微小的延遲以提供更平滑的體驗
+                    # Add tiny delay for smoother experience
                     self.move_queue.put((ddx, ddy, 0.003))
                     logger.debug(f"V2aim: Moving to target at ({cx:.1f}, {cy:.1f}), distance: {distance_to_center:.1f}")
             except Exception as e:
                 logger.error(f"V2aim error: {e}")
 
             try:
-                # --- Triggerbot (V2aim也支持triggerbot) ---
+                # --- Triggerbot (V2aim also supports triggerbot) ---
                 if getattr(config, "enabletb", False) and is_button_pressed(getattr(config, "selected_tb_btn", None)) or is_button_pressed(getattr(config, "selected_2_tb", None)):
-                    # Centre de l'écran
+                    # Screen center
                     cx0, cy0 = int(frame.xres // 2), int(frame.yres // 2)
-                    ROI_SIZE = 5  # petit carré autour du centre
+                    ROI_SIZE = 5  # small square around center
                     x1, y1 = max(cx0 - ROI_SIZE, 0), max(cy0 - ROI_SIZE, 0)
                     x2, y2 = min(cx0 + ROI_SIZE, img.shape[1]), min(cy0 + ROI_SIZE, img.shape[0])
                     roi = img[y1:y2, x1:x2]
 
                     if roi.size == 0:
-                        return  # sécurité
+                        return  # safety check
 
-                    # Conversion HSV (assure-toi que img est BGR)
+                    # HSV conversion (ensure img is BGR)
                     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-                    # Plage HSV pour le violet (ajuste si nécessaire)
+                    # HSV range for purple (adjust if necessary)
                     HSV_UPPER = self.model[1]
                     HSV_LOWER = self.model[0]
                     
@@ -655,12 +668,12 @@ class AimTracker:
 
                     detected = cv2.countNonZero(mask) > 0
 
-                    # Debug affichage
+                    # Debug display
                     cv2.imshow("ROI", roi)
                     cv2.imshow("Mask", mask)
                     cv2.waitKey(1)
 
-                    # Texte sur l'image principale
+                    # Text on main image
                     if detected:
                         cv2.putText(img, "PURPLE DETECTED", (10, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
@@ -674,38 +687,38 @@ class AimTracker:
                 logger.error(f"V2aim triggerbot error: {e}")
 
         elif mode == "Flick":
-            # Flick模式 - 按下瞄準瞬間移動到敵人頭部
+            # Flick mode - instantly move to enemy head when pressing aim
             try:
-                if aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
-                    # 執行flick移動到目標
+                if should_aim() and targets:
+                    # Execute flick movement to target
                     if self._flick_to_target(cx, cy, center_x, center_y):
-                        # 如果啟用了flick triggerbot，則自動開槍
+                        # If flick triggerbot is enabled, auto shoot
                         if getattr(config, "enableflicktb", False):
-                            time.sleep(0.01)  # 短暫延遲確保移動完成
+                            time.sleep(0.01)  # Brief delay to ensure movement completion
                             self.controller.click()
                             logger.debug("Flick mode triggerbot activated")
                         else:
-                            # 不打勾則瞬間移動到敵人頭部後進行一般的自瞄
+                            # If unchecked, move to enemy head instantly then perform normal aimbot
                             logger.debug("Flick mode: moved to target, continuing with normal aim")
             except Exception as e:
                 logger.error(f"Flick mode error: {e}")
 
         elif mode == "Silent":
-            # Silent模式 - 瞬間移動到目標並返回原位置
+            # Silent mode - instantly move to target and return to original position
             try:
                 silent_enabled = getattr(config, "enablesilent", False)
-                if silent_enabled and aim_enabled and selected_btn is not None and is_button_pressed(selected_btn) and targets:
-                    # 根據設置選擇使用哪種速度模式
+                if silent_enabled and should_aim() and targets:
+                    # Choose speed mode based on settings
                     if getattr(config, "enableextremefast", False):
-                        # 使用極限速度silent flick移動到目標並返回
+                        # Use extreme speed silent flick to move to target and return
                         if self._extreme_fast_silent_flick(cx, cy, center_x, center_y):
-                            pass  # 無日誌記錄以提升速度
+                            pass  # No logging to improve speed
                     elif getattr(config, "enableultrafast", True):
-                        # 使用超高速silent flick移動到目標並返回
+                        # Use ultra fast silent flick to move to target and return
                         if self._ultra_fast_silent_flick(cx, cy, center_x, center_y):
-                            pass  # 無日誌記錄以提升速度
+                            pass  # No logging to improve speed
                     else:
-                        # 使用普通silent flick移動到目標並返回
+                        # Use normal silent flick to move to target and return
                         if self._silent_flick_to_target(cx, cy, center_x, center_y):
                             logger.debug("Silent mode: Flick executed and returned to original position")
             except Exception as e:
@@ -719,7 +732,7 @@ class ViewerApp(ctk.CTk):
         self.title("CUPSY COLORBOT")
         self.geometry("400x700")
 
-        # Dicos pour MAJ UI <-> config
+        # Dictionaries for UI <-> config updates
         self._slider_widgets = {}   # key -> {"slider": widget, "label": widget, "min":..., "max":...}
         self._checkbox_vars = {}    # key -> tk.BooleanVar
         self._option_widgets = {}   # key -> CTkOptionMenu
@@ -740,26 +753,26 @@ class ViewerApp(ctk.CTk):
         self.selected_source = None
         self.source_queue = queue.Queue()
         self.after(100, self._process_source_updates)
-        # enlève la barre native
+        # Remove native bar
        
 
-        # barre custom
+        # Custom bar
         self.title_bar = ctk.CTkFrame(self, height=30, corner_radius=0)
         self.title_bar.pack(fill="x", side="top")
 
         self.title_label = ctk.CTkLabel(self.title_bar, text="CUPSY CB", anchor="w")
         self.title_label.pack(side="left", padx=10)
 
-        # bouton fermer
+        # Close button
         self.close_btn = ctk.CTkButton(self.title_bar, text="X", width=25, command=self.destroy)
         self.close_btn.pack(side="right", padx=2)
 
-        # rendre la barre draggable
+        # Make bar draggable
         self.title_bar.bind("<Button-1>", self.start_move)
         self.title_bar.bind("<B1-Motion>", self.do_move)
         
         # Tracker
-        self.tracker = AimTracker(app=self, target_fps=80)
+        self.tracker = AimTracker(app=self, target_fps=float(getattr(config, "target_fps", 80)))
 
         # TabView
         self.tabview = ctk.CTkTabview(self)
@@ -779,7 +792,7 @@ class ViewerApp(ctk.CTk):
         self.after(500, self._update_connection_status_loop)
         self._load_initial_config()
 
-    # ---------- Helpers de mapping UI ----------
+    # ---------- UI mapping helpers ----------
     def _register_slider(self, key, slider, label, vmin, vmax, is_float):
         self._slider_widgets[key] = {"slider": slider, "label": label, "min": vmin, "max": vmax, "is_float": is_float}
 
@@ -795,9 +808,9 @@ class ViewerApp(ctk.CTk):
 
 
             else:
-                print("doesn't exist")
+                print("Config file doesn't exist")
         except Exception as e:
-            print("Impossible de charger la config initiale:", e)
+            print("Unable to load initial config:", e)
 
 
 
@@ -815,9 +828,9 @@ class ViewerApp(ctk.CTk):
             return
         v = max(vmin, min(v, vmax))
         w["slider"].set(v)
-        # Rafraîchir label
+        # Refresh label
         txt = f"{key.replace('_',' ').title()}: {v:.2f}" if is_float else f"{key.replace('_',' ').title()}: {int(v)}"
-        # On garde le libellé humain (X Speed etc.) si déjà présent
+        # Keep human-readable label (X Speed etc.) if already present
         current = w["label"].cget("text")
         prefix = current.split(":")[0] if ":" in current else txt.split(":")[0]
         w["label"].configure(text=f"{prefix}: {v:.2f}" if is_float else f"{prefix}: {int(v)}")
@@ -879,6 +892,7 @@ class ViewerApp(ctk.CTk):
             "color": getattr(config, "color", "yellow"),
             "mode": getattr(config, "mode", "V1aim"),
             "enableaim": getattr(config, "enableaim", False),
+            "always_aim": getattr(config, "always_aim", False),
             "enabletb": getattr(config, "enabletb", False),
             "selected_mouse_button": getattr(config, "selected_mouse_button", 3),
             "selected_tb_btn": getattr(config, "selected_tb_btn", 3),
@@ -893,41 +907,43 @@ class ViewerApp(ctk.CTk):
             "enablesilentbezier": getattr(config, "enablesilentbezier", False),
             "enablesilenttb": getattr(config, "enablesilenttb", False),
             "enableultrafast": getattr(config, "enableultrafast", True),
-            "enableextremefast": getattr(config, "enableextremefast", False)
+            "enableextremefast": getattr(config, "enableextremefast", False),
+            "target_fps": getattr(config, "target_fps", 80),
+            "y_offset": getattr(config, "y_offset", 0)
 
         }
 
     def _apply_settings(self, data, config_name=None):
         """
-        Applique un dictionnaire de settings sur le config global, le tracker et l'UI.
-        Recharge le modèle si nécessaire.
+        Apply a settings dictionary to global config, tracker and UI.
+        Reload model if necessary.
         """
         try:
-            # --- Appliquer sur config global ---
+            # --- Apply to global config ---
             for k, v in data.items():
                 setattr(config, k, v)
 
-            # --- Appliquer sur le tracker si l'attribut existe ---
+            # --- Apply to tracker if attribute exists ---
             for k, v in data.items():
                 if hasattr(self.tracker, k):
                     setattr(self.tracker, k, v)
 
-            # --- Mettre à jour les sliders ---
+            # --- Update sliders ---
             for k, v in data.items():
                 if k in self._slider_widgets:
                     self._set_slider_value(k, v)
 
-            # --- Mettre à jour les checkbox ---
+            # --- Update checkboxes ---
             for k, v in data.items():
                 if k in self._checkbox_vars:
                     self._set_checkbox_value(k, v)
 
-            # --- Mettre à jour les OptionMenu ---
+            # --- Update OptionMenus ---
             for k, v in data.items():
                 if k in self._option_widgets:
                     self._set_option_value(k, v)
 
-            # --- Mettre à jour les OptionMenu ---
+            # --- Update OptionMenus ---
             for k, v in data.items():
                 if k == "selected_mouse_button" or k == "selected_tb_btn":
 
@@ -938,7 +954,7 @@ class ViewerApp(ctk.CTk):
                         print(v)
                         self._set_btn_option_value(k, v)
 
-            # --- Recharger le modèle si nécessaire ---
+            # --- Reload model if necessary ---
             from detection import reload_model
             self.tracker.model, self.tracker.class_names = reload_model()
 
@@ -948,14 +964,14 @@ class ViewerApp(ctk.CTk):
                 self._log_config(f"Config applied and model reloaded ✅")
 
         except Exception as e:
-            self._log_config(f"[Erreur _apply_settings] {e}")
+            self._log_config(f"[Error _apply_settings] {e}")
 
 
     def _save_new_config(self):
         from tkinter import simpledialog
         name = simpledialog.askstring("Config name", "Enter the config name:")
         if not name:
-            self._log_config("Cancelled save (pas de nom fourni).")
+            self._log_config("Cancelled save (no name provided).")
             return
         data = self._get_current_settings()
         path = os.path.join("configs", f"{name}.json")
@@ -964,16 +980,16 @@ class ViewerApp(ctk.CTk):
             with open(path, "w") as f:
                 json.dump(data, f, indent=4)
             self._refresh_config_list()
-            self.config_option.set(name)  # Sélectionner automatiquement
-            self._log_config(f"New config'{name}' saved ✅")
+            self.config_option.set(name)  # Automatically select
+            self._log_config(f"New config '{name}' saved ✅")
         except Exception as e:
-            self._log_config(f"[Erreur SAVE] {e}")
+            self._log_config(f"[Error SAVE] {e}")
 
 
 
     def _load_selected_config(self):
         """
-        Charge la config sélectionnée dans l'OptionMenu.
+        Load the selected config from OptionMenu.
         """
         name = self.config_option.get()
         path = os.path.join("configs", f"{name}.json")
@@ -983,7 +999,7 @@ class ViewerApp(ctk.CTk):
             self._apply_settings(data, config_name=name)
             self._log_config(f"Config '{name}' loaded 📂")
         except Exception as e:
-            self._log_config(f"[Erreur LOAD] {e}")
+            self._log_config(f"[Error LOAD] {e}")
 
 
 
@@ -1010,10 +1026,10 @@ class ViewerApp(ctk.CTk):
         try:
             with open(path, "w") as f:
                 json.dump(data, f, indent=4)
-            self._log_config(f"Config '{name}' sauvegardée ✅")
+            self._log_config(f"Config '{name}' saved ✅")
             self._refresh_config_list()
         except Exception as e:
-            self._log_config(f"[Erreur SAVE] {e}")
+            self._log_config(f"[Error SAVE] {e}")
 
     def _load_config(self):
         name = self.config_option.get() or "default"
@@ -1024,7 +1040,7 @@ class ViewerApp(ctk.CTk):
             self._apply_settings(data)
             self._log_config(f"Config '{name}' loaded 📂")
         except Exception as e:
-            self._log_config(f"[Erreur LOAD] {e}")
+            self._log_config(f"[Error LOAD] {e}")
 
     def _log_config(self, msg):
         self.config_log.insert("end", msg + "\n")
@@ -1034,6 +1050,10 @@ class ViewerApp(ctk.CTk):
     def _build_general_tab(self):
         self.status_label = ctk.CTkLabel(self.tab_general, text="Status: Disconnected")
         self.status_label.pack(pady=5, anchor="w")
+        
+        # Target FPS Control
+        s, l = self._add_slider_with_label(self.tab_general, "Target FPS", 30, 240, float(getattr(config, "target_fps", 80)), self._on_target_fps_changed, is_float=True)
+        self._register_slider("target_fps", s, l, 30, 240, True)
 
         self.source_option = ctk.CTkOptionMenu(self.tab_general, values=["(searching...)"], command=self._on_source_selected)
         self.source_option.pack(pady=5, fill="x")
@@ -1042,7 +1062,7 @@ class ViewerApp(ctk.CTk):
         ctk.CTkButton(self.tab_general, text="Connect to Source", command=self._connect_to_selected).pack(pady=5, fill="x")
         #ctk.CTkButton(self.tab_general, text="Toggle Rage Mode", command=self._toggle_rage).pack(pady=5, fill="x")
 
-        ctk.CTkLabel(self.tab_general, text="Apparence").pack(pady=5)
+        ctk.CTkLabel(self.tab_general, text="Appearance").pack(pady=5)
         ctk.CTkOptionMenu(self.tab_general, values=["Dark", "Light"], command=self._on_appearance_selected).pack(pady=5, fill="x")
 
         ctk.CTkLabel(self.tab_general, text="Mode").pack(pady=5)
@@ -1050,7 +1070,7 @@ class ViewerApp(ctk.CTk):
         self.mode_option.pack(pady=5, fill="x")
         self._option_widgets["mode"] = self.mode_option
 
-        ctk.CTkLabel(self.tab_general, text="Couleur").pack(pady=5)
+        ctk.CTkLabel(self.tab_general, text="Color").pack(pady=5)
         self.color_option = ctk.CTkOptionMenu(self.tab_general, values=["yellow", "purple"], command=self._on_color_selected)
         self.color_option.pack(pady=5, fill="x")
         self._option_widgets["color"] = self.color_option
@@ -1074,8 +1094,11 @@ class ViewerApp(ctk.CTk):
         # FOV Size
         s, l = self._add_slider_with_label(self.tab_aimbot, "FOV Size", 1, 1000, float(getattr(config, "fovsize", 300)), self._on_fovsize_changed, is_float=True)
         self._register_slider("fovsize", s, l, 1, 1000, True)
+        # Y Offset
+        s, l = self._add_slider_with_label(self.tab_aimbot, "Y Offset", -100, 100, float(getattr(config, "y_offset", 0)), self._on_y_offset_changed, is_float=True)
+        self._register_slider("y_offset", s, l, -100, 100, True)
 
-        # Flick相關控件容器（初始隱藏）
+        # Flick related control container (initially hidden)
         self.flick_frame = ctk.CTkFrame(self.tab_aimbot)
         self.flick_frame.pack(pady=10, fill="x", padx=10)
         
@@ -1102,10 +1125,10 @@ class ViewerApp(ctk.CTk):
         ctk.CTkCheckBox(self.flick_frame, text="Flick Auto Shoot", variable=self.var_enableflicktb, command=self._on_enableflicktb_changed).pack(pady=6, anchor="w")
         self._checkbox_vars["enableflicktb"] = self.var_enableflicktb
         
-        # 初始隱藏Flick控件
+        # Initially hide Flick controls
         self.flick_frame.pack_forget()
         
-        # Silent相關控件容器（初始隱藏）
+        # Silent related control container (initially hidden)
         self.silent_frame = ctk.CTkFrame(self.tab_aimbot)
         self.silent_frame.pack(pady=10, fill="x", padx=10)
         
@@ -1142,13 +1165,18 @@ class ViewerApp(ctk.CTk):
         ctk.CTkCheckBox(self.silent_frame, text="Extreme Fast Mode (Fastest)", variable=self.var_enableextremefast, command=self._on_enableextremefast_changed).pack(pady=6, anchor="w")
         self._checkbox_vars["enableextremefast"] = self.var_enableextremefast
         
-        # 初始隱藏Silent控件
+        # Initially hide Silent controls
         self.silent_frame.pack_forget()
 
         # Enable Aim
         self.var_enableaim = tk.BooleanVar(value=getattr(config, "enableaim", False))
         ctk.CTkCheckBox(self.tab_aimbot, text="Enable Aim", variable=self.var_enableaim, command=self._on_enableaim_changed).pack(pady=6, anchor="w")
         self._checkbox_vars["enableaim"] = self.var_enableaim
+
+        # Always Aim
+        self.var_always_aim = tk.BooleanVar(value=getattr(config, "always_aim", False))
+        ctk.CTkCheckBox(self.tab_aimbot, text="Always Aim", variable=self.var_always_aim, command=self._on_always_aim_changed).pack(pady=6, anchor="w")
+        self._checkbox_vars["always_aim"] = self.var_always_aim
 
         ctk.CTkLabel(self.tab_aimbot, text="Aimbot Button").pack(pady=5, anchor="w")
         self.aimbot_button_option = ctk.CTkOptionMenu(
@@ -1207,22 +1235,44 @@ class ViewerApp(ctk.CTk):
     def _on_normal_x_speed_changed(self, val):
         config.normal_x_speed = val
         self.tracker.normal_x_speed = val
+        logger.info(f"X Speed changed to: {val}")
+        print(f"[CONFIG] X Speed set to: {val}")
 
     def _on_normal_y_speed_changed(self, val):
         config.normal_y_speed = val
         self.tracker.normal_y_speed = val
+        logger.info(f"Y Speed changed to: {val}")
+        print(f"[CONFIG] Y Speed set to: {val}")
 
     def _on_config_in_game_sens_changed(self, val):
         config.in_game_sens = val
         self.tracker.in_game_sens = val
+        logger.info(f"In-game sensitivity changed to: {val}")
+        print(f"[CONFIG] In-game sensitivity set to: {val}")
 
     def _on_config_normal_smooth_changed(self, val):
         config.normalsmooth = val
         self.tracker.normalsmooth = val
+        logger.info(f"Smoothing changed to: {val}")
+        print(f"[CONFIG] Smoothing set to: {val}")
 
     def _on_config_normal_smoothfov_changed(self, val):
         config.normalsmoothfov = val
         self.tracker.normalsmoothfov = val
+        logger.info(f"Smoothing FOV changed to: {val}")
+        print(f"[CONFIG] Smoothing FOV set to: {val}")
+
+    def _on_target_fps_changed(self, val):
+        config.target_fps = val
+        self.tracker._target_fps = val
+        logger.info(f"Target FPS changed to: {val}")
+        print(f"[CONFIG] Target FPS set to: {val}")
+
+    def _on_y_offset_changed(self, val):
+        config.y_offset = val
+        self.tracker.y_offset = val
+        logger.info(f"Y Offset changed to: {val}")
+        print(f"[CONFIG] Y Offset set to: {val}")
 
     def _on_aimbot_button_selected(self, val):
         for key, name in BUTTONS.items():
@@ -1243,17 +1293,27 @@ class ViewerApp(ctk.CTk):
     def _on_fovsize_changed(self, val):
         config.fovsize = val
         self.tracker.fovsize = val
+        logger.info(f"FOV Size changed to: {val}")
+        print(f"[CONFIG] FOV Size set to: {val}")
 
     def _on_tbdelay_changed(self, val):
         config.tbdelay = val
         self.tracker.tbdelay = val
+        logger.info(f"TB Delay changed to: {val}")
+        print(f"[CONFIG] TB Delay set to: {val}")
 
     def _on_tbfovsize_changed(self, val):
         config.tbfovsize = val
         self.tracker.tbfovsize = val
+        logger.info(f"TB FOV Size changed to: {val}")
+        print(f"[CONFIG] TB FOV Size set to: {val}")
 
     def _on_enableaim_changed(self):
         config.enableaim = self.var_enableaim.get()
+
+    def _on_always_aim_changed(self):
+        config.always_aim = self.var_always_aim.get()
+        logger.info(f"Always aim enabled: {config.always_aim}")
 
     def _on_enabletb_changed(self):
         config.enabletb = self.var_enabletb.get()
@@ -1261,6 +1321,8 @@ class ViewerApp(ctk.CTk):
     def _on_flick_strength_changed(self, val):
         config.flick_strength = val
         self.tracker.flick_strength = val
+        logger.info(f"Flick Strength changed to: {val}")
+        print(f"[CONFIG] Flick Strength set to: {val}")
 
     def _on_flick_cooldown_changed(self, val):
         config.flick_cooldown = val
@@ -1275,6 +1337,8 @@ class ViewerApp(ctk.CTk):
     def _on_silent_strength_changed(self, val):
         config.silent_strength = val
         self.tracker.silent_strength = val
+        logger.info(f"Silent Strength changed to: {val}")
+        print(f"[CONFIG] Silent Strength set to: {val}")
 
     def _on_enablesilent_changed(self):
         config.enablesilent = self.var_enablesilent.get()
@@ -1326,11 +1390,11 @@ class ViewerApp(ctk.CTk):
         self.tracker.mode = val
         logger.info(f"Mode changed to: {val}")
         
-        # 隱藏所有模式特定的控件
+        # Hide all mode-specific controls
         self.flick_frame.pack_forget()
         self.silent_frame.pack_forget()
         
-        # 根據模式顯示相應的控件
+        # Show corresponding controls based on mode
         if val == "Flick":
             self.flick_frame.pack(pady=10, fill="x", padx=10)
         elif val == "Silent":

@@ -4,6 +4,7 @@ class Config:
         # --- General Settings ---
 
         self.enableaim = True
+        self.always_aim = False
         self.enabletb = False
         self.offsetX = -2
         self.offsetY = 3
